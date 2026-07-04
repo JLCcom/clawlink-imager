@@ -47,7 +47,7 @@ SSH is on by default on Armbian Minimal, so no `FR_ssh_*` fields are needed.
 **Status: not yet written by this app** — today a human has to do this by
 hand per the ops doc. Automating it is the single biggest gap between
 "flash with this app" and "boots with zero touch." Tracked in
-[#TBD](../../issues).
+[#7](https://github.com/JLCcom/clawlink-imager/issues/7).
 
 ## 2. Layer 2 — `clawlink.conf`
 
@@ -70,14 +70,14 @@ HW_MODEL=rpi4
 | `HW_MODEL` | yes | One of the board keys in `docs/API_CONTRACT.md`'s manifest. |
 | `WIFI_SSID` / `WIFI_PW` | no | Skipped if the board has wired ethernet. |
 
-**Escaping rule (currently violated — see §4):** because the OS side does
-`source "$CONF"`, every value must be wrapped in single quotes with any
-embedded `'` escaped (standard shell quoting), e.g. a WiFi password of
-`it's$afe` must be written as `WIFI_PW='it'\''s$afe'`. The current Imager
-code (`src/main.js` `boot:inject`) writes raw, unquoted values — a password
-containing `$`, `` ` ``, or whitespace will either break the file or, worse,
-run arbitrary shell as root during first boot. This is a correctness/safety
-bug, not a template — fix before shipping to real users.
+**Escaping rule (currently violated — see [#6](https://github.com/JLCcom/clawlink-imager/issues/6)):**
+because the OS side does `source "$CONF"`, every value must be wrapped in
+single quotes with any embedded `'` escaped (standard shell quoting), e.g. a
+WiFi password of `it's$afe` must be written as `WIFI_PW='it'\''s$afe'`. The
+current Imager code (`src/main.js` `boot:inject`) writes raw, unquoted
+values — a password containing `$`, `` ` ``, or whitespace will either break
+the file or, worse, run arbitrary shell as root during first boot. This is a
+correctness/safety bug, not a template — fix before shipping to real users.
 
 ## 3. Execution order
 
@@ -94,17 +94,23 @@ Both files are consumed at first boot, in this order:
 `After=` on Armbian's first-run unit — it only waits on
 `network-online.target`. In practice this has worked because Armbian's
 first-run finishes before network comes up, but it is an implicit ordering,
-not a guaranteed one. Should be made explicit on the main-repo side.
+not a guaranteed one. Should be made explicit on the main-repo side
+(tracked in [`JLCcom/clawlink#612`](https://github.com/JLCcom/clawlink/issues/612)).
 
 ## 4. Known gaps (tracked as issues)
 
-- Layer 1 (`armbian_first_run.txt`) is not written by this app yet.
-- Layer 2 values are not shell-escaped before being written.
-- `CONTRACT_VERSION` is defined here but not yet read or written anywhere.
+- Layer 1 (`armbian_first_run.txt`) is not written by this app yet —
+  [#7](https://github.com/JLCcom/clawlink-imager/issues/7).
+- Layer 2 values are not shell-escaped before being written —
+  [#6](https://github.com/JLCcom/clawlink-imager/issues/6).
+- `CONTRACT_VERSION` is defined here but not yet read or written anywhere —
+  [#10](https://github.com/JLCcom/clawlink-imager/issues/10) (this repo) /
+  [`JLCcom/clawlink#612`](https://github.com/JLCcom/clawlink/issues/612) (OS-side read).
 - WiFi bring-up is duplicated: Armbian's own `armbian_first_run.txt` also
   supports `FR_net_wifi_ssid` / `FR_net_wifi_key`; `clawlink-firstboot.sh`
   additionally rolls its own `nmcli`/`wpa_supplicant` logic. Worth
-  consolidating onto one path instead of two independent WiFi bring-ups.
+  consolidating onto one path instead of two independent WiFi bring-ups —
+  tracked alongside [`JLCcom/clawlink#612`](https://github.com/JLCcom/clawlink/issues/612).
 
 See the issue tracker for the concrete work items derived from this
 document — this file should stay a description of the contract as it
