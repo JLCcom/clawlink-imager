@@ -18,6 +18,8 @@ export default function App() {
   const [board, setBoard]           = useState('rpi4');
   const [wifiSsid, setWifiSsid]     = useState('');
   const [wifiPw, setWifiPw]         = useState('');
+  const [sshPassword, setSshPassword] = useState('');
+  const [sshPubkey, setSshPubkey]     = useState('');
   const [drives, setDrives]         = useState([]);
   const [drive, setDrive]           = useState('');
   const [phase, setPhase]           = useState('idle'); // idle | downloading | writing | injecting | done | error
@@ -69,7 +71,7 @@ export default function App() {
       await window.clImager.writeSD({ imagePath: tmpPath, device: drive });
 
       setPhase('injecting');
-      await window.clImager.injectBoot({ device: drive, serial, wifiSsid, wifiPw, hwModel: board });
+      await window.clImager.injectBoot({ device: drive, serial, wifiSsid, wifiPw, hwModel: board, sshPassword, sshPubkey });
 
       setPhase('done');
     } catch (e) {
@@ -120,6 +122,19 @@ export default function App() {
           <label>WiFi 설정 <span className="opt">(선택)</span></label>
           <input value={wifiSsid} onChange={e => setWifiSsid(e.target.value)} placeholder="SSID" className="mb4" />
           <input value={wifiPw} onChange={e => setWifiPw(e.target.value)} placeholder="비밀번호" type="password" />
+        </section>
+
+        {/* SSH — BYOD: 비워두면 기본값(root/1234, clawlink/1234) 그대로 사용 */}
+        <section className="field">
+          <label>SSH 접속 <span className="opt">(선택 — 비우면 기본 계정 사용)</span></label>
+          <input value={sshPassword} onChange={e => setSshPassword(e.target.value)} placeholder="내 비밀번호로 바꾸기" type="password" className="mb4" />
+          <textarea
+            value={sshPubkey}
+            onChange={e => setSshPubkey(e.target.value)}
+            placeholder="공개키로 접속하려면 여기에 붙여넣기 (ssh-ed25519 AAAA...)"
+            className="input-pubkey"
+            rows={2}
+          />
         </section>
 
         {/* SD 카드 */}
