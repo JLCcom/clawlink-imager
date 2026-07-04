@@ -1,0 +1,16 @@
+{
+  "//": "팀 공유 설정 (커밋됨). 개인 권한/오버라이드는 .claude/settings.local.json (gitignored).",
+  "//hook": "SessionStart — 최우선 개발 규칙서(GitHub 이슈 #1)를 매 세션 시작 시 컨텍스트에 자동 주입. 신규 개발자도 클론+gh auth 만으로 동일 환경.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '=== 최우선 개발 규칙서 (GitHub 이슈 #1 · 작업 전 필독) ==='; gh issue view 1 --repo JLCcom/clawlink-imager --json title,body,comments --jq '\"# \" + .title + \"\\n\\n\" + .body + (if (.comments|length)>0 then \"\\n\\n=== 추가 규칙·내용 (코멘트 — 본문과 동급 적용) ===\\n\\n\" + ([.comments[].body]|join(\"\\n\\n---\\n\\n\")) else \"\" end)' 2>/dev/null || echo '[#1 로드 실패 — gh 인증 필요: gh auth login · 또는 https://github.com/JLCcom/clawlink-imager/issues/1]'"
+          }
+        ]
+      }
+    ]
+  }
+}
