@@ -86,6 +86,8 @@ SERIAL=CL-EO1-260600-000123
 WIFI_SSID=my-wifi
 WIFI_PW=my-password
 HW_MODEL=rpi4
+SSH_PASSWORD=
+SSH_PUBKEY=
 ```
 
 | Field | Required | Notes |
@@ -94,6 +96,17 @@ HW_MODEL=rpi4
 | `SERIAL` | yes | If empty, `clawlink-firstboot.sh` exits without activating. |
 | `HW_MODEL` | yes | One of the board keys in `docs/API_CONTRACT.md`'s manifest. |
 | `WIFI_SSID` / `WIFI_PW` | no | Skipped if the board has wired ethernet. |
+| `SSH_PASSWORD` | no | **Proposed, not yet implemented — see below.** RPi-Imager-style per-device override for the `clawlink` user's password. If unset, `clawlink-firstboot.sh` falls back to the fixed fleet default (`1234`) per §1b. |
+| `SSH_PUBKEY` | no | **Proposed, not yet implemented.** A public key to install into `~clawlink/.ssh/authorized_keys`, letting a user skip password auth entirely. |
+
+**Why these two are optional, not required:** most of this fleet is
+provisioned by the ClawLink team itself using the fixed standard credentials
+(§1b) — the override exists for end users who want to flash their own
+device with their own credentials, same idea as Raspberry Pi Imager's
+"custom user/password + SSH key" advanced options. Tracked in
+[#13](https://github.com/JLCcom/clawlink-imager/issues/13) (Imager-side UI)
+and [`JLCcom/clawlink#617`](https://github.com/JLCcom/clawlink/issues/617)
+(OS-side: consume these instead of always hardcoding `1234`).
 
 **Escaping rule (currently violated — see [#6](https://github.com/JLCcom/clawlink-imager/issues/6)):**
 because the OS side does `source "$CONF"`, every value must be wrapped in
