@@ -11,7 +11,11 @@ on:
 
 jobs:
   build-win:
-    runs-on: windows-latest
+    # windows-latest currently resolves to an image whose bundled Visual
+    # Studio version node-gyp's detector doesn't recognize yet, which breaks
+    # native-addon installs (drivelist). Pinned to windows-2022 until that's
+    # sorted out upstream.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
