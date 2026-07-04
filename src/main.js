@@ -5,7 +5,10 @@ const fs = require('fs');
 const { execFile, exec } = require('child_process');
 const https = require('https');
 const http = require('http');
+const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
 const log = require('electron-log');
+const drivelist = require('drivelist');
 
 const IS_DEV = process.env.NODE_ENV === 'development' || !app.isPackaged;
 const CLOUD_URL = 'https://clawlinkai.io';
@@ -74,13 +77,17 @@ ipcMain.handle('os:manifest', async () => {
   });
 });
 
+// 이동식 드라이브만 남기는 안전 기준 — sd:write 쓰기 직전 재검증(#5)에서도 그대로 재사용
+function isSafeSdDrive(d) {
+  return d.isRemovable && d.size > 1_000_000_000;
+}
+
 // 드라이브 목록
 ipcMain.handle('drives:list', async () => {
   try {
-    const drivelist = require('drivelist');
     const drives = await drivelist.list();
     return drives
-      .filter(d => d.isRemovable && d.size > 1_000_000_000)
+      .filter(isSafeSdDrive)
       .map(d => ({ device: d.device, description: d.description, size: d.size, displayName: `${d.description} (${(d.size / 1e9).toFixed(0)} GB) — ${d.device}` }));
   } catch (e) {
     log.error('drives:list error', e);
@@ -111,16 +118,41 @@ ipcMain.handle('image:download', async (e, { url, destPath, fileName }) => {
 
 // SD 쓰기
 ipcMain.handle('sd:write', async (e, { imagePath, device }) => {
-  return new Promise((resolve, reject) => {
-    // xz 압축 해제 후 dd 쓰기
-    const cmd = process.platform === 'win32'
-      ? `7z x -so "${imagePath}" | dd of="${device}" bs=4M`
-      : `xzcat "${imagePath}" | dd of="${device}" bs=4M status=progress`;
+  // #5 — renderer가 보내는 device 문자열을 그대로 믿지 않고, 쓰기 직전 다시 한 번
+  // 실제 드라이브 목록에서 같은 안전 기준(이동식 · 1GB 이상)으로 재확인한다.
+  // (드라이브가 그 사이 빠졌거나, 다른 드라이브로 교체됐을 수 있음)
+  const freshDrives = await drivelist.list();
+  const match = freshDrives.find(d => d.device === device && isSafeSdDrive(d));
+  if (!match) {
+    throw new Error('선택한 드라이브를 다시 찾을 수 없습니다. SD카드를 확인하고 목록을 새로고침하세요.');
+  }
 
-    const child = exec(cmd, { shell: '/bin/bash' }, (err) => {
+  if (process.platform === 'win32') {
+    // (실기기 미검증 — #8) Windows에는 7z·dd가 기본으로 없어서 예전 코드가 그냥 실패했다.
+    // 외부 바이너리를 번들링하는 대신, xz 해제를 순수 JS(WASM, xz-decompress)로 하고
+    // drivelist가 주는 원본 디바이스 경로(\\.\PhysicalDriveN)에 Node fs로 직접 쓴다 —
+    // Etcher·RPi Imager와 같은 원리(관리자 권한 필요 — package.json의
+    // win.requestedExecutionLevel=requireAdministrator로 앱 실행 시 UAC 요청, #9).
+    const { XzReadableStream } = require('xz-decompress');
+    const total = fs.statSync(imagePath).size; // 압축 파일 크기 기준 — 진행률은 근사치
+    let compressedRead = 0;
+    const compressedStream = fs.createReadStream(imagePath);
+    compressedStream.on('data', (chunk) => {
+      compressedRead += chunk.length;
+      e.sender.send('write:progress', Math.round((compressedRead / total) * 100));
+    });
+    const decompressed = Readable.fromWeb(new XzReadableStream(Readable.toWeb(compressedStream)));
+    const out = fs.createWriteStream(device, { flags: 'w' });
+    await pipeline(decompressed, out);
+    return true;
+  }
+
+  // Linux/Mac: xzcat | dd (실기기 검증 별도 — #11)
+  return new Promise((resolve, reject) => {
+    const cmd = `xzcat "${imagePath}" | dd of="${device}" bs=4M status=progress`;
+    const child = exec(cmd, (err) => {
       if (err) reject(err); else resolve(true);
     });
-
     child.stderr?.on('data', (d) => {
       const m = d.toString().match(/(\d+) bytes/);
       if (m) e.sender.send('write:progress', parseInt(m[1]));
@@ -136,17 +168,25 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
+// clawlink.conf 계약 버전 — docs/BOOT_CONTRACT.md §2. 필드를 지우거나 의미를 바꿀 때만 올린다.
+const CLAWLINK_CONF_CONTRACT_VERSION = 1;
+
 // boot 파티션 마운트 + clawlink.conf 주입
-ipcMain.handle('boot:inject', async (_e, { device, serial, wifiSsid, wifiPw, hwModel }) => {
+ipcMain.handle('boot:inject', async (_e, { device, serial, wifiSsid, wifiPw, hwModel, sshPassword, sshPubkey }) => {
   return new Promise((resolve, reject) => {
     const bootPart = process.platform === 'win32' ? device : `${device}1`;
     const mountDir = `/tmp/clawlink-boot-${Date.now()}`;
 
     const confContent = [
+      `CONTRACT_VERSION=${CLAWLINK_CONF_CONTRACT_VERSION}`,
       `SERIAL=${shellQuote(serial)}`,
-      wifiSsid ? `WIFI_SSID=${shellQuote(wifiSsid)}` : '',
-      wifiPw   ? `WIFI_PW=${shellQuote(wifiPw)}`     : '',
+      wifiSsid   ? `WIFI_SSID=${shellQuote(wifiSsid)}`     : '',
+      wifiPw     ? `WIFI_PW=${shellQuote(wifiPw)}`         : '',
       `HW_MODEL=${shellQuote(hwModel)}`,
+      // BYOD(#13) — 비워두면 OS 쪽(clawlink-firstboot.sh, JLCcom/clawlink#617)이
+      // 고정 기본값(root/1234, clawlink/1234)으로 fallback.
+      sshPassword ? `SSH_PASSWORD=${shellQuote(sshPassword)}` : '',
+      sshPubkey   ? `SSH_PUBKEY=${shellQuote(sshPubkey)}`     : '',
     ].filter(Boolean).join('\n') + '\n';
 
     if (process.platform === 'linux') {
@@ -158,9 +198,24 @@ ipcMain.handle('boot:inject', async (_e, { device, serial, wifiSsid, wifiPw, hwM
           });
         });
       });
+    } else if (process.platform === 'win32') {
+      // (실기기 미검증 — #8/#9) 드라이브 문자는 매번 달라질 수 있어 고정값(D:\)을
+      // 쓰면 틀리기 쉽다 — drivelist로 이 물리 디스크가 실제로 마운트된 경로를
+      // 찾는다. Windows는 rootfs(ext4) 파티션은 못 읽으므로 보통 boot(FAT32)
+      // 파티션 하나만 드라이브 문자가 잡힌다.
+      drivelist.list().then((drives) => {
+        const target = drives.find((d) => d.device === device);
+        const mountPath = target?.mountpoints?.[0]?.path;
+        if (!mountPath) {
+          return reject(new Error('boot 파티션의 드라이브 문자를 찾지 못했습니다. SD카드를 다시 꽂고 새로고침 후 시도하세요.'));
+        }
+        fs.writeFile(path.join(mountPath, 'clawlink.conf'), confContent, (e2) => {
+          if (e2) reject(new Error(`boot 파티션 쓰기 실패: ${e2.message}`)); else resolve(true);
+        });
+      }, reject);
     } else {
-      // Windows/Mac: 볼륨이 자동 마운트되므로 직접 파일 쓰기 시도
-      const bootRoot = process.platform === 'darwin' ? `/Volumes/boot` : `D:\\`;
+      // macOS: 볼륨이 자동 마운트되므로 직접 파일 쓰기 시도 (실기기 미검증)
+      const bootRoot = `/Volumes/boot`;
       fs.writeFile(path.join(bootRoot, 'clawlink.conf'), confContent, (e2) => {
         if (e2) reject(new Error(`boot 파티션 쓰기 실패: ${e2.message}`)); else resolve(true);
       });
