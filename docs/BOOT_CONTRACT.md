@@ -92,21 +92,18 @@ SSH_PUBKEY=
 
 | Field | Required | Notes |
 |---|---|---|
-| `CONTRACT_VERSION` | yes | Integer. Lets the OS-side script detect an Imager version it doesn't understand instead of silently misparsing. Not yet implemented on either side — see §4. |
+| `CONTRACT_VERSION` | yes | Integer, written as `1`. Lets the OS-side script detect an Imager version it doesn't understand instead of silently misparsing. Imager side done (`src/main.js`) — OS-side read is [`JLCcom/clawlink#612`](https://github.com/JLCcom/clawlink/issues/612), not yet implemented there. |
 | `SERIAL` | yes | If empty, `clawlink-firstboot.sh` exits without activating. |
 | `HW_MODEL` | yes | One of the board keys in `docs/API_CONTRACT.md`'s manifest. |
 | `WIFI_SSID` / `WIFI_PW` | no | Skipped if the board has wired ethernet. |
-| `SSH_PASSWORD` | no | **Proposed, not yet implemented — see below.** RPi-Imager-style per-device override for the `clawlink` user's password. If unset, `clawlink-firstboot.sh` falls back to the fixed fleet default (`1234`) per §1b. |
-| `SSH_PUBKEY` | no | **Proposed, not yet implemented.** A public key to install into `~clawlink/.ssh/authorized_keys`, letting a user skip password auth entirely. |
+| `SSH_PASSWORD` | no | RPi-Imager-style per-device override for the `clawlink` user's password. Imager side done (#13 — UI field + written to `clawlink.conf`). If unset, `clawlink-firstboot.sh` should fall back to the fixed fleet default (`1234`) per §1b — OS-side consumption is `JLCcom/clawlink#617`, not yet implemented there. |
+| `SSH_PUBKEY` | no | A public key to install into `~clawlink/.ssh/authorized_keys`, letting a user skip password auth entirely. Same status as `SSH_PASSWORD` — Imager side done, OS side pending (`JLCcom/clawlink#617`). |
 
 **Why these two are optional, not required:** most of this fleet is
 provisioned by the ClawLink team itself using the fixed standard credentials
 (§1b) — the override exists for end users who want to flash their own
 device with their own credentials, same idea as Raspberry Pi Imager's
-"custom user/password + SSH key" advanced options. Tracked in
-[#13](https://github.com/JLCcom/clawlink-imager/issues/13) (Imager-side UI)
-and [`JLCcom/clawlink#617`](https://github.com/JLCcom/clawlink/issues/617)
-(OS-side: consume these instead of always hardcoding `1234`).
+"custom user/password + SSH key" advanced options.
 
 **Escaping rule (fixed — [#6](https://github.com/JLCcom/clawlink-imager/issues/6)):**
 because the OS side does `source "$CONF"`, every value is wrapped in single
@@ -149,9 +146,13 @@ already covers a related ordering question).
   `armbian_first_run.txt` framing.
 - ~~Layer 2 (`clawlink.conf`) values are not shell-escaped before being
   written~~ — fixed, [#6](https://github.com/JLCcom/clawlink-imager/issues/6).
-- `CONTRACT_VERSION` is defined here but not yet read or written anywhere —
-  [#10](https://github.com/JLCcom/clawlink-imager/issues/10) (this repo) /
-  [`JLCcom/clawlink#612`](https://github.com/JLCcom/clawlink/issues/612) (OS-side read).
+- ~~`CONTRACT_VERSION` not written by the Imager~~ — fixed, #10. OS-side read
+  still pending — [`JLCcom/clawlink#612`](https://github.com/JLCcom/clawlink/issues/612).
+- Windows `sd:write` (#8) is now implemented in pure JS (`xz-decompress` +
+  direct write to the `\\.\PhysicalDriveN` path from `drivelist`, no bundled
+  `7z`/`dd` binaries) and `boot:inject` looks up the real drive letter via
+  `drivelist` instead of assuming `D:\`. **Not yet verified on real Windows
+  hardware** — this repo's rule requires that before calling it done.
 - Unverified: whether Armbian Minimal ships with OpenSSH enabled out of the
   box independent of any first-run file, as the ops doc assumes — this is
   image packaging, not a first-run mechanism, so it should hold regardless,
