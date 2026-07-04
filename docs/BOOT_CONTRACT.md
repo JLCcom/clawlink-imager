@@ -108,14 +108,13 @@ device with their own credentials, same idea as Raspberry Pi Imager's
 and [`JLCcom/clawlink#617`](https://github.com/JLCcom/clawlink/issues/617)
 (OS-side: consume these instead of always hardcoding `1234`).
 
-**Escaping rule (currently violated — see [#6](https://github.com/JLCcom/clawlink-imager/issues/6)):**
-because the OS side does `source "$CONF"`, every value must be wrapped in
-single quotes with any embedded `'` escaped (standard shell quoting), e.g. a
-WiFi password of `it's$afe` must be written as `WIFI_PW='it'\''s$afe'`. The
-current Imager code (`src/main.js` `boot:inject`) writes raw, unquoted
-values — a password containing `$`, `` ` ``, or whitespace will either break
-the file or, worse, run arbitrary shell as root during first boot. This is a
-correctness/safety bug, not a template — fix before shipping to real users.
+**Escaping rule (fixed — [#6](https://github.com/JLCcom/clawlink-imager/issues/6)):**
+because the OS side does `source "$CONF"`, every value is wrapped in single
+quotes with any embedded `'` escaped (standard shell quoting), e.g. a WiFi
+password of `it's$afe` is written as `WIFI_PW='it'\''s$afe'`. Implemented as
+`shellQuote()` in `src/main.js` (`boot:inject`), applied to every field.
+Verified locally: values containing `$`, backticks, `$()`, spaces, and `'`
+all round-trip through `source` unchanged with no shell execution.
 
 ## 3. Execution order
 
@@ -143,12 +142,13 @@ already covers a related ordering question).
 ## 4. Known gaps (tracked as issues)
 
 - Root/user password + SSH enable is not yet done by `clawlink-firstboot.sh`
-  or anything else in the pipeline — **not yet filed**, needs a new
-  `JLCcom/clawlink` issue (see §1b). This is now the single biggest gap
-  between "flash with this app" and "boots with zero touch," replacing the
-  old (incorrect) `armbian_first_run.txt` framing.
-- Layer 2 (`clawlink.conf`) values are not shell-escaped before being
-  written — [#6](https://github.com/JLCcom/clawlink-imager/issues/6).
+  or anything else in the pipeline — filed as
+  [`JLCcom/clawlink#617`](https://github.com/JLCcom/clawlink/issues/617)
+  (see §1b). This is the single biggest remaining gap between "flash with
+  this app" and "boots with zero touch," replacing the old (incorrect)
+  `armbian_first_run.txt` framing.
+- ~~Layer 2 (`clawlink.conf`) values are not shell-escaped before being
+  written~~ — fixed, [#6](https://github.com/JLCcom/clawlink-imager/issues/6).
 - `CONTRACT_VERSION` is defined here but not yet read or written anywhere —
   [#10](https://github.com/JLCcom/clawlink-imager/issues/10) (this repo) /
   [`JLCcom/clawlink#612`](https://github.com/JLCcom/clawlink/issues/612) (OS-side read).

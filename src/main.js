@@ -128,6 +128,14 @@ ipcMain.handle('sd:write', async (e, { imagePath, device }) => {
   });
 });
 
+// clawlink-firstboot.sh(메인 repo)가 clawlink.conf를 `source`로 읽기 때문에,
+// 값에 $·`·공백·따옴표가 들어가면 파일이 깨지거나 최악의 경우 root 권한으로
+// 임의 shell 명령이 실행될 수 있다(#6). 작은따옴표로 감싸고 내부 작은따옴표만
+// 표준 shell escaping('\'')으로 빼내면 어떤 값이 와도 안전하다.
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
 // boot 파티션 마운트 + clawlink.conf 주입
 ipcMain.handle('boot:inject', async (_e, { device, serial, wifiSsid, wifiPw, hwModel }) => {
   return new Promise((resolve, reject) => {
@@ -135,10 +143,10 @@ ipcMain.handle('boot:inject', async (_e, { device, serial, wifiSsid, wifiPw, hwM
     const mountDir = `/tmp/clawlink-boot-${Date.now()}`;
 
     const confContent = [
-      `SERIAL=${serial}`,
-      wifiSsid ? `WIFI_SSID=${wifiSsid}` : '',
-      wifiPw   ? `WIFI_PW=${wifiPw}`     : '',
-      `HW_MODEL=${hwModel}`,
+      `SERIAL=${shellQuote(serial)}`,
+      wifiSsid ? `WIFI_SSID=${shellQuote(wifiSsid)}` : '',
+      wifiPw   ? `WIFI_PW=${shellQuote(wifiPw)}`     : '',
+      `HW_MODEL=${shellQuote(hwModel)}`,
     ].filter(Boolean).join('\n') + '\n';
 
     if (process.platform === 'linux') {
