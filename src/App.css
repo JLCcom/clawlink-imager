@@ -71,6 +71,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--cl-ink); }
 
 .hint { font-size: .75rem; color: var(--cl-muted); }
 .hint.err { color: var(--cl-danger); }
+.hint code { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; background: rgba(47,93,80,0.08); padding: 1px 4px; border-radius: 4px; }
 
 .mb4 { margin-bottom: 4px; }
 

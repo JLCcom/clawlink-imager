@@ -127,6 +127,7 @@ export default function App() {
         {/* SSH — BYOD: 비워두면 기본값(root/1234, clawlink/1234) 그대로 사용 */}
         <section className="field">
           <label>SSH 접속 <span className="opt">(선택 — 비우면 기본 계정 사용)</span></label>
+          <p className="hint">기본 계정: <code>root</code>/<code>1234</code>, <code>clawlink</code>/<code>1234</code> — 아래에 입력하면 그 값으로 바뀝니다.</p>
           <input value={sshPassword} onChange={e => setSshPassword(e.target.value)} placeholder="내 비밀번호로 바꾸기" type="password" className="mb4" />
           <textarea
             value={sshPubkey}
