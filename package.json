@@ -4,6 +4,7 @@
   "description": "ClawLink Imager — SD 카드 자동 굽기 데스크탑 툴",
   "main": "src/main.js",
   "homepage": "./",
+  "license": "Apache-2.0",
   "scripts": {
     "start": "concurrently \"npm run react\" \"wait-on http://localhost:3000 && electron .\"",
     "react": "react-scripts start",

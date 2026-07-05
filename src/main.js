@@ -1,5 +1,5 @@
 // main.js — Electron main process
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execFile, exec } = require('child_process');
@@ -34,6 +34,47 @@ function createWindow() {
   } else {
     win.loadFile(path.join(__dirname, '../build/index.html'));
   }
+
+  buildMenu(win);
+}
+
+// 언어 메뉴(#18) + 도움말>정보(#19). 라디오 체크 표시는 메뉴 자체 상태로만 관리되고
+// 렌더러 쪽 localStorage 저장값과는 별도라서, 재시작하면 메뉴 표시는 "시스템 기본"으로
+// 돌아간다 — 실제 언어 선택(렌더러가 적용하는 값)은 그대로 유지되니 기능상 문제는 없음.
+function buildMenu(win) {
+  const template = [
+    {
+      label: '언어 / Language',
+      submenu: [
+        { label: '시스템 기본 / System default', type: 'radio', checked: true, click: () => win.webContents.send('set-language', 'system') },
+        { label: '한국어', type: 'radio', click: () => win.webContents.send('set-language', 'ko') },
+        { label: 'English', type: 'radio', click: () => win.webContents.send('set-language', 'en') },
+      ],
+    },
+    {
+      label: '도움말 / Help',
+      submenu: [
+        {
+          label: 'ClawLink Imager 정보 / About ClawLink Imager',
+          click: () => {
+            dialog.showMessageBox(win, {
+              type: 'info',
+              title: 'ClawLink Imager',
+              message: `ClawLink Imager v${app.getVersion()}`,
+              detail: [
+                'Provided by ClawLink — https://clawlinkai.io',
+                '',
+                'License: Apache License 2.0',
+                'https://github.com/JLCcom/clawlink-imager',
+              ].join('\n'),
+              buttons: ['OK'],
+            });
+          },
+        },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 app.whenReady().then(createWindow);

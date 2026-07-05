@@ -10,4 +10,5 @@ contextBridge.exposeInMainWorld('clImager', {
   injectBoot:     (opts)     => ipcRenderer.invoke('boot:inject', opts),
   onDownloadProgress: (fn)   => ipcRenderer.on('download:progress', (_e, v) => fn(v)),
   onWriteProgress:    (fn)   => ipcRenderer.on('write:progress',    (_e, v) => fn(v)),
+  onSetLanguage:      (fn)   => ipcRenderer.on('set-language', (_e, code) => fn(code)),
 });
