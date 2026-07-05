@@ -1,9 +1,24 @@
+/* ClawLink 브랜드 토큰 재사용 (#224 결정 — 그린 기본/오렌지 보조).
+   cloud-portal/src/app.css 의 --cl-color-* 와 같은 값. 이 앱은 작은 유틸리티
+   창이라 라이트(크림) 베이스만 사용 — cloud-portal의 다크 대시보드와는 다름. */
+:root {
+  --cl-ink:      #2f5d50;
+  --cl-ink-hover:#3a7060;
+  --cl-neon:     #2EE6A0;
+  --cl-accent:   #E9A035;
+  --cl-danger:   #c0392b;
+  --cl-cream:    #f4efe7;
+  --cl-card:     #fefcf7;
+  --cl-border:   rgba(47,93,80,0.14);
+  --cl-muted:    rgba(47,93,80,0.60);
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: #f5f5f7;
-  color: #1d1d1f;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--cl-cream);
+  color: var(--cl-ink);
   font-size: 14px;
   -webkit-app-region: drag;
 }
@@ -11,7 +26,7 @@ body {
 .app { display: flex; flex-direction: column; min-height: 100vh; }
 
 .app-header {
-  background: #1d1d1f;
+  background: var(--cl-ink);
   color: #fff;
   padding: 14px 20px;
   display: flex;
@@ -19,61 +34,66 @@ body {
   gap: 10px;
   -webkit-app-region: drag;
 }
-.logo  { font-size: 1.4rem; color: #4ade80; }
+.logo  { font-size: 1.4rem; color: var(--cl-neon); }
 .title { font-size: 1.1rem; font-weight: 600; letter-spacing: -0.01em; }
 
 main { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 16px; -webkit-app-region: no-drag; }
 
 .field { display: flex; flex-direction: column; gap: 6px; }
-label  { font-size: .78rem; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: .04em; }
+label  { font-size: .78rem; font-weight: 600; color: var(--cl-muted); text-transform: uppercase; letter-spacing: .04em; }
 .opt   { font-weight: 400; text-transform: none; color: #999; }
 
-input, select {
+input, select, textarea {
   padding: 9px 12px;
-  border: 1.5px solid #ddd;
+  border: 1.5px solid var(--cl-border);
   border-radius: 8px;
   font-size: .9rem;
-  background: #fff;
+  font-family: inherit;
+  background: var(--cl-card);
+  color: var(--cl-ink);
   outline: none;
   transition: border-color .15s;
+  resize: vertical;
 }
-input:focus, select:focus { border-color: #4ade80; }
+input:focus, select:focus, textarea:focus { border-color: var(--cl-ink); }
 
 .input-row { display: flex; align-items: center; gap: 8px; }
 .input-serial { flex: 1; font-family: 'Courier New', monospace; font-weight: 600; letter-spacing: .06em; }
+.input-pubkey { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: .78rem; }
 
 .badge {
   font-size: .7rem; font-weight: 700; padding: .2rem .5rem;
   border-radius: 12px; white-space: nowrap;
 }
-.badge.checking { background: #fef3c7; color: #92400e; }
-.badge.ok        { background: #dcfce7; color: #15803d; }
-.badge.err       { background: #fee2e2; color: #b91c1c; }
+.badge.checking { background: rgba(233,160,53,0.16); color: var(--cl-accent); }
+.badge.ok        { background: rgba(47,93,80,0.12);  color: var(--cl-ink); }
+.badge.err       { background: rgba(192,57,43,0.10);  color: var(--cl-danger); }
 
-.hint { font-size: .75rem; color: #888; }
-.hint.err { color: #ef4444; }
+.hint { font-size: .75rem; color: var(--cl-muted); }
+.hint.err { color: var(--cl-danger); }
+.hint code { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; background: rgba(47,93,80,0.08); padding: 1px 4px; border-radius: 4px; }
 
 .mb4 { margin-bottom: 4px; }
 
 .refresh-btn {
-  border: none; background: #e5e7eb; border-radius: 5px; cursor: pointer;
-  padding: 2px 7px; font-size: .8rem; margin-left: 6px; color: #374151;
+  border: none; background: rgba(47,93,80,0.10); border-radius: 5px; cursor: pointer;
+  padding: 2px 7px; font-size: .8rem; margin-left: 6px; color: var(--cl-ink);
 }
-.refresh-btn:hover { background: #d1d5db; }
+.refresh-btn:hover { background: rgba(47,93,80,0.18); }
 
 .progress-wrap { display: flex; flex-direction: column; gap: 4px; }
-.progress-label { font-size: .78rem; font-weight: 600; color: #555; }
-.progress-bar { height: 10px; background: #e5e7eb; border-radius: 5px; overflow: hidden; }
-.progress-fill { height: 100%; background: linear-gradient(90deg,#4ade80,#22c55e); border-radius: 5px; transition: width .3s; }
-.progress-pct  { font-size: .72rem; color: #888; text-align: right; }
+.progress-label { font-size: .78rem; font-weight: 600; color: var(--cl-muted); }
+.progress-bar { height: 10px; background: rgba(47,93,80,0.12); border-radius: 5px; overflow: hidden; }
+.progress-fill { height: 100%; background: linear-gradient(90deg, var(--cl-ink), var(--cl-neon)); border-radius: 5px; transition: width .3s; }
+.progress-pct  { font-size: .72rem; color: var(--cl-muted); text-align: right; }
 
-.done-msg { background: #dcfce7; border: 1.5px solid #86efac; border-radius: 10px; padding: 14px 16px; font-size: .88rem; line-height: 1.5; color: #15803d; }
-.error-msg { background: #fee2e2; border: 1.5px solid #fca5a5; border-radius: 10px; padding: 14px 16px; font-size: .85rem; color: #b91c1c; }
+.done-msg { background: rgba(47,93,80,0.10); border: 1.5px solid var(--cl-ink); border-radius: 10px; padding: 14px 16px; font-size: .88rem; line-height: 1.5; color: var(--cl-ink); }
+.error-msg { background: rgba(192,57,43,0.08); border: 1.5px solid var(--cl-danger); border-radius: 10px; padding: 14px 16px; font-size: .85rem; color: var(--cl-danger); }
 
 .burn-btn {
   padding: 13px; border: none; border-radius: 10px; font-size: 1rem; font-weight: 700;
-  cursor: pointer; background: #d1d5db; color: #9ca3af; transition: all .2s;
+  cursor: pointer; background: #d8d3c8; color: #9a9488; transition: all .2s;
   letter-spacing: -0.01em; margin-top: 4px;
 }
-.burn-btn.active { background: #22c55e; color: #fff; }
-.burn-btn.active:hover { background: #16a34a; }
+.burn-btn.active { background: var(--cl-ink); color: #fff; }
+.burn-btn.active:hover { background: var(--cl-ink-hover); }

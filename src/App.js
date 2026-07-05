@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
+import { resolveLang, getDict } from './i18n';
 
 const BOARDS = [
   { key: 'rpi3',     label: 'Raspberry Pi 3B/3B+' },
@@ -18,12 +19,18 @@ export default function App() {
   const [board, setBoard]           = useState('rpi4');
   const [wifiSsid, setWifiSsid]     = useState('');
   const [wifiPw, setWifiPw]         = useState('');
+  const [sshPassword, setSshPassword] = useState('');
+  const [sshPubkey, setSshPubkey]     = useState('');
   const [drives, setDrives]         = useState([]);
   const [drive, setDrive]           = useState('');
   const [phase, setPhase]           = useState('idle'); // idle | downloading | writing | injecting | done | error
   const [progress, setProgress]     = useState(0);
   const [errorMsg, setErrorMsg]     = useState('');
+  const [langPref, setLangPref]     = useState(() => window.localStorage?.getItem('cl-lang') || 'system');
   const debounceRef = useRef(null);
+
+  const lang = resolveLang(langPref === 'system' ? null : langPref);
+  const t = getDict(lang);
 
   // 보드 이미지 목록 로드
   useEffect(() => {
@@ -33,6 +40,11 @@ export default function App() {
     window.clImager?.listDrives().then(setDrives);
     window.clImager?.onDownloadProgress(v => setProgress(v));
     window.clImager?.onWriteProgress(() => {});
+    // 메뉴의 언어 선택(#18) — 'system'이면 OS/브라우저 로케일로 자동 감지.
+    window.clImager?.onSetLanguage((code) => {
+      setLangPref(code);
+      window.localStorage?.setItem('cl-lang', code);
+    });
   }, []);
 
   // 시리얼 실시간 검증 (debounce 500ms)
@@ -69,7 +81,7 @@ export default function App() {
       await window.clImager.writeSD({ imagePath: tmpPath, device: drive });
 
       setPhase('injecting');
-      await window.clImager.injectBoot({ device: drive, serial, wifiSsid, wifiPw, hwModel: board });
+      await window.clImager.injectBoot({ device: drive, serial, wifiSsid, wifiPw, hwModel: board, sshPassword, sshPubkey });
 
       setPhase('done');
     } catch (e) {
@@ -79,7 +91,7 @@ export default function App() {
   };
 
   const canBurn = serialStatus?.valid && drive && phase === 'idle';
-  const phaseLabel = { idle: '', downloading: '다운로드 중', writing: 'SD 쓰기 중', injecting: '설정 주입 중', done: '완료!', error: '오류' }[phase] || '';
+  const phaseLabel = t.phase[phase] || '';
 
   return (
     <div className="app">
@@ -91,44 +103,58 @@ export default function App() {
       <main>
         {/* 시리얼 */}
         <section className="field">
-          <label>시리얼 번호</label>
+          <label>{t.serialLabel}</label>
           <div className="input-row">
             <input
               value={serial}
               onChange={e => handleSerialChange(e.target.value)}
-              placeholder="CL-EO1-YYMMDD-000001"
+              placeholder={t.serialPlaceholder}
               className="input-serial"
             />
-            {serialStatus === 'checking' && <span className="badge checking">확인 중…</span>}
-            {serialStatus?.valid  === true  && <span className="badge ok">✅ 유효</span>}
-            {serialStatus?.valid  === false && <span className="badge err">❌ 오류</span>}
+            {serialStatus === 'checking' && <span className="badge checking">{t.checking}</span>}
+            {serialStatus?.valid  === true  && <span className="badge ok">{t.valid}</span>}
+            {serialStatus?.valid  === false && <span className="badge err">{t.invalid}</span>}
           </div>
-          {serialStatus?.valid && <p className="hint">유형: {serialStatus.sku} · 상태: {serialStatus.status}</p>}
-          {serialStatus?.valid === false && <p className="hint err">시리얼을 확인하세요.</p>}
+          {serialStatus?.valid && <p className="hint">{t.serialHint(serialStatus.sku, serialStatus.status)}</p>}
+          {serialStatus?.valid === false && <p className="hint err">{t.serialInvalidHint}</p>}
         </section>
 
         {/* 보드 선택 */}
         <section className="field">
-          <label>보드</label>
+          <label>{t.boardLabel}</label>
           <select value={board} onChange={e => setBoard(e.target.value)}>
-            {boards.map(b => <option key={b.key} value={b.key}>{b.label}{b.available === false ? ' (준비 중)' : ''}</option>)}
+            {boards.map(b => <option key={b.key} value={b.key}>{b.label}{b.available === false ? t.boardPreparing : ''}</option>)}
           </select>
         </section>
 
         {/* WiFi */}
         <section className="field">
-          <label>WiFi 설정 <span className="opt">(선택)</span></label>
-          <input value={wifiSsid} onChange={e => setWifiSsid(e.target.value)} placeholder="SSID" className="mb4" />
-          <input value={wifiPw} onChange={e => setWifiPw(e.target.value)} placeholder="비밀번호" type="password" />
+          <label>{t.wifiLabel} <span className="opt">{t.optional}</span></label>
+          <input value={wifiSsid} onChange={e => setWifiSsid(e.target.value)} placeholder={t.wifiSsidPlaceholder} className="mb4" />
+          <input value={wifiPw} onChange={e => setWifiPw(e.target.value)} placeholder={t.wifiPwPlaceholder} type="password" />
+        </section>
+
+        {/* SSH — BYOD: 비워두면 기본값(root/1234, clawlink/1234) 그대로 사용 */}
+        <section className="field">
+          <label>{t.sshLabel} <span className="opt">{t.sshOptional}</span></label>
+          <p className="hint">{t.sshHint}</p>
+          <input value={sshPassword} onChange={e => setSshPassword(e.target.value)} placeholder={t.sshPasswordPlaceholder} type="password" className="mb4" />
+          <textarea
+            value={sshPubkey}
+            onChange={e => setSshPubkey(e.target.value)}
+            placeholder={t.sshPubkeyPlaceholder}
+            className="input-pubkey"
+            rows={2}
+          />
         </section>
 
         {/* SD 카드 */}
         <section className="field">
-          <label>SD 카드 <button className="refresh-btn" onClick={refreshDrives}>↻</button></label>
+          <label>{t.sdLabel} <button className="refresh-btn" onClick={refreshDrives}>↻</button></label>
           {drives.length === 0
-            ? <p className="hint">SD 카드를 꽂고 ↻ 버튼을 누르세요.</p>
+            ? <p className="hint">{t.sdHint}</p>
             : <select value={drive} onChange={e => setDrive(e.target.value)}>
-                <option value="">— 드라이브 선택 —</option>
+                <option value="">{t.sdSelect}</option>
                 {drives.map(d => <option key={d.device} value={d.device}>{d.displayName}</option>)}
               </select>}
         </section>
@@ -144,8 +170,8 @@ export default function App() {
 
         {phase === 'done' && (
           <div className="done-msg">
-            ✅ 완료! SD 카드를 보드에 꽂고 전원을 켜세요.<br />
-            첫 부팅 시 자동으로 ClawLink 엣지가 설치됩니다.
+            {t.doneMsg1}<br />
+            {t.doneMsg2}
           </div>
         )}
 
@@ -157,7 +183,7 @@ export default function App() {
           disabled={!canBurn}
           onClick={handleBurn}
         >
-          {phase === 'idle' ? '굽기 시작' : phaseLabel}
+          {phase === 'idle' ? t.burnStart : phaseLabel}
         </button>
       </main>
     </div>
