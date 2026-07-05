@@ -9,10 +9,10 @@
     "start": "concurrently \"npm run react\" \"wait-on http://localhost:3000 && electron .\"",
     "react": "react-scripts start",
     "build": "react-scripts build",
-    "electron:build": "npm run build && electron-builder",
-    "electron:build:win": "npm run build && electron-builder --win",
-    "electron:build:mac": "npm run build && electron-builder --mac",
-    "electron:build:linux": "npm run build && electron-builder --linux"
+    "electron:build": "npm run build && electron-builder --publish never",
+    "electron:build:win": "npm run build && electron-builder --win --publish never",
+    "electron:build:mac": "npm run build && electron-builder --mac --publish never",
+    "electron:build:linux": "npm run build && electron-builder --linux --publish never"
   },
   "build": {
     "extends": null,
