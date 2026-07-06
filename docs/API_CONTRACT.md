@@ -5,29 +5,39 @@
 메인 repo 쪽에서 이 API들을 바꿀 때는 반드시 이 문서도 같이 갱신하고, 필요하면
 이 repo에도 대응 이슈를 만든다.
 
-## 1. 시리얼 검증
+## 1. 시리얼 검증 (Imager가 굽기 전 호출)
 
 ```
-GET https://clawlinkai.io/api/v1/serials/:serial
+GET https://clawlinkai.io/api/v1/serials/:serial/check
 ```
-인증 불필요(공개). 응답:
+인증 불필요(공개). Imager는 시리얼 입력 시 이걸 호출해 "오타/죽은 시리얼"만 미리 거른다 —
+실제 라이선스 강제는 기기 첫 부팅의 활성화(메인 repo `docs/business/License_Policy.md` §4~5,
+`POST /v1/serials/:serial/activate`)에서 일어난다.
+
+응답:
 
 ```json
-{
-  "valid": true,
-  "serial": "CL-EO1-260600-000123",
-  "model": "eo1",
-  "owner_user_id": "someuser",
-  "device_id": "abc123...",
-  "alias": "우리집 엣지",
-  "alias_updated_at": "2026-07-01T00:00:00Z",
-  "claimed": true
-}
+// 성공
+{ "valid": true, "sku": "EO1", "status": "available" }
+
+// 실패 (valid=false + reason)
+{ "valid": false, "reason": "not_found" }
+{ "valid": false, "reason": "already_activated" }
+{ "valid": false, "reason": "revoked" }
+{ "valid": false, "reason": "trial_expired" }
 ```
 
-미등록 시리얼이면 HTTP 404 + `{"valid": false, "serial": "...", "reason": "serial_not_registered", "guide": "..."}`.
+Imager UI는 `valid`로 유효/오류 배지를, `sku`·`status`로 힌트("유형: {sku} · 상태: {status}")를
+표시한다(`src/App.js`). 응답에 없는 필드는 무시.
 
-원본: `JLCcom/clawlink` repo `dbms/handlers/cloud-claim.js` (`GET /v1/serials/:serial`).
+원본:
+- 공개 경로(프록시): `JLCcom/clawlink` repo `cloud-portal/index.cjs` — `GET /api/v1/serials/:serial/check`
+  → `REGISTRY_URL/v1/serials/:serial/check`
+- 구현·명세 권위: `dbms/index.js` (`/v1/serials/:serial/check`) · `docs/business/License_Policy.md` §5
+
+> 참고 — 별도 엔드포인트: `GET /api/v1/serials/:serial`(끝에 `/check` 없음)는 **Edge 설치 시
+> 시리얼 직접 검증용**(#281)이며 `owner_user_id`·`device_id`·`alias` 등 더 풍부한 필드를 준다.
+> Imager는 이걸 쓰지 않는다 — 혼동 주의.
 
 ## 2. OS 이미지 다운로드
 
