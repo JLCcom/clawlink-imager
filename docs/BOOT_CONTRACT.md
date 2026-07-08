@@ -59,7 +59,7 @@ on that issue.
 Since the Imager can't safely touch the ext4 root partition, and
 `armbian_first_run.txt` doesn't do accounts anyway, the only place left that
 can do this **and already runs as root, on-device, after boot** is
-`clawlink-firstboot.sh` itself. Proposed (main-repo work, not this repo):
+`clawlink-firstboot.sh` itself. **Implemented** in [`JLCcom/clawlink#617`](https://github.com/JLCcom/clawlink/issues/617) (PR #698, main repo):
 
 - Set the root password and create the `clawlink` user directly
   (`chpasswd`, `useradd`), matching the existing production standard
@@ -71,8 +71,7 @@ can do this **and already runs as root, on-device, after boot** is
   first-login wizard never fires, now that the accounts it would have asked
   about already exist.
 
-This is **not yet filed as an issue** — needs a new issue in
-`JLCcom/clawlink`, cross-linked here once created.
+Implemented — [`JLCcom/clawlink#617`](https://github.com/JLCcom/clawlink/issues/617) (PR #698). `clawlink-firstboot.sh` now does all three (chpasswd root/clawlink=1234, `systemctl enable --now ssh`, `rm /root/.not_logged_in_yet`) before the WiFi/serial/install steps. ⚠️ Baked into edge-image (`build-clawlinkos-image.sh`) → takes effect on next edge-image rebuild.
 
 ## 2. Layer 2 — `clawlink.conf`
 
@@ -138,12 +137,11 @@ already covers a related ordering question).
 
 ## 4. Known gaps (tracked as issues)
 
-- Root/user password + SSH enable is not yet done by `clawlink-firstboot.sh`
-  or anything else in the pipeline — filed as
-  [`JLCcom/clawlink#617`](https://github.com/JLCcom/clawlink/issues/617)
-  (see §1b). This is the single biggest remaining gap between "flash with
-  this app" and "boots with zero touch," replacing the old (incorrect)
-  `armbian_first_run.txt` framing.
+- ~~Root/user password + SSH enable not done by `clawlink-firstboot.sh`~~ —
+  **DONE** in [`JLCcom/clawlink#617`](https://github.com/JLCcom/clawlink/issues/617)
+  (PR #698): firstboot.sh sets root/`1234`·clawlink/`1234`, `systemctl enable --now ssh`,
+  and clears `/root/.not_logged_in_yet` (see §1b). Real-hardware headless-boot verification
+  pending (flash → boot no-monitor → SSH). Takes effect after edge-image rebuild.
 - ~~Layer 2 (`clawlink.conf`) values are not shell-escaped before being
   written~~ — fixed, [#6](https://github.com/JLCcom/clawlink-imager/issues/6).
 - ~~`CONTRACT_VERSION` not written by the Imager~~ — fixed, #10. OS-side read
@@ -157,11 +155,14 @@ already covers a related ordering question).
   box independent of any first-run file, as the ops doc assumes — this is
   image packaging, not a first-run mechanism, so it should hold regardless,
   but hasn't been confirmed against the actual `Armbian_community_24.11.0_*`
-  base images this project pins.
+  base images this project pins. (Mitigated regardless: #617 now runs
+  `systemctl enable --now ssh` explicitly rather than assuming.)
 - Unverified: whether any `apt-get`/`dpkg` step inside `install.sh` or
   `clawlink-firstboot.sh`'s Docker install can hit an interactive `debconf`
   prompt (e.g. `tzdata`, `locales`) and hang first boot with no TTY attached
-  — needs `DEBIAN_FRONTEND=noninteractive` verification. **Not yet filed.**
+  — `clawlink-firstboot.sh` now `export`s `DEBIAN_FRONTEND=noninteractive` at the top
+  (inherited by the Docker install and `install.sh` subprocess) as part of #617/PR #698.
+  Real-hardware confirmation still pending.
 
 See the issue tracker for the concrete work items derived from this
 document — this file should stay a description of the contract as it
