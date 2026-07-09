@@ -9,8 +9,11 @@ const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 const log = require('electron-log');
 const drivelist = require('drivelist');
+const ghcr = require('./ghcr');
 
 const IS_DEV = process.env.NODE_ENV === 'development' || !app.isPackaged;
+
+// 시리얼 검증용. OS 이미지는 여기서 받지 않는다 — 공개 GHCR OCI 로 옮겼다(#31, 메인 repo #712).
 const CLOUD_URL = 'https://clawlinkai.io';
 
 // ── 윈도우 ────────────────────────────────────────────────────────────────────
@@ -101,21 +104,35 @@ ipcMain.handle('serial:check', async (_e, serial) => {
   });
 });
 
-// 보드 이미지 목록
+// 보드 이미지 목록 — 공개 GHCR OCI 아티팩트에서 읽는다(#31).
+// 옛 `clawlinkai.io/dist/os/manifest.json` 은 폐기됐다(메인 repo #712). 그 URL은 지금
+// 404가 아니라 200으로 빈 플레이스홀더를 돌려주기 때문에, 계속 보고 있으면 에러 없이
+// 조용히 "굽을 이미지가 없음" 상태가 된다.
 ipcMain.handle('os:manifest', async () => {
-  return new Promise((resolve) => {
-    const url = `${CLOUD_URL}/dist/os/manifest.json`;
-    const client = url.startsWith('https') ? https : http;
-    const req = client.get(url, { timeout: 8000 }, (res) => {
-      let body = '';
-      res.on('data', (d) => { body += d; });
-      res.on('end', () => {
-        try { resolve(JSON.parse(body)); }
-        catch { resolve({ boards: [] }); }
-      });
-    });
-    req.on('error', () => resolve({ boards: [] }));
-  });
+  try {
+    const info = await ghcr.describeLatest();
+    return {
+      ok: true,
+      ref: info.ref,
+      osVersion: info.osVersion,
+      version: info.version,
+      revision: info.revision,
+      osBase: info.osBase,
+      docker: info.docker,
+      updated: info.built,
+      boards: [{
+        board: info.board,
+        file: info.image.file,
+        sha256: info.image.sha256,
+        size: info.image.size,
+        date: info.built,
+        available: true,
+      }],
+    };
+  } catch (e) {
+    log.error('os:manifest error', e);
+    return { ok: false, error: e.message, boards: [] };
+  }
 });
 
 // 이동식 드라이브만 남기는 안전 기준 — sd:write 쓰기 직전 재검증(#5)에서도 그대로 재사용
@@ -136,25 +153,38 @@ ipcMain.handle('drives:list', async () => {
   }
 });
 
-// 이미지 다운로드
-ipcMain.handle('image:download', async (e, { url, destPath, fileName }) => {
-  const tmpFile = path.join(app.getPath('temp'), fileName);
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(tmpFile);
-    const client = url.startsWith('https') ? https : http;
-    const req = client.get(url, (res) => {
-      const total = parseInt(res.headers['content-length'] || '0');
-      let received = 0;
-      res.on('data', (chunk) => {
-        received += chunk.length;
-        if (total > 0) e.sender.send('download:progress', Math.round((received / total) * 100));
-      });
-      res.pipe(file);
-      file.on('finish', () => { file.close(); resolve(tmpFile); });
-      file.on('error', reject);
-    });
-    req.on('error', reject);
+// 이미지 준비 (#25) — 다운로드 + sha256 검증까지가 "준비"고, 여기까지만 인터넷이 필요하다.
+// 준비가 끝나면 SD 쓰기·설정 주입은 완전히 로컬이라 인터넷을 끊어도 된다.
+// 임시 폴더가 아니라 캐시 폴더에 두기 때문에, 같은 이미지로 SD를 여러 장 구울 때
+// 다시 받지 않는다.
+function imageCacheDir() {
+  return path.join(app.getPath('userData'), 'image-cache');
+}
+
+ipcMain.handle('image:prepare', async (e) => {
+  const info = await ghcr.describeLatest();
+  const result = await ghcr.prepareImage({
+    cacheDir: imageCacheDir(),
+    info,
+    onProgress: (p) => e.sender.send('prepare:progress', p),
   });
+  return { ...result, verified: true, osVersion: info.osVersion, version: info.version };
+});
+
+// 오프라인/사전 다운로드분 재사용 (#25). 출처를 모르는 파일이라 sha256 대조 상대가 없다 —
+// verified:false 로 돌려주고 UI가 "검증 안 됨"을 드러낸다.
+ipcMain.handle('image:pickLocal', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    title: 'ClawLink OS 이미지 선택',
+    properties: ['openFile'],
+    filters: [
+      { name: 'ClawLink OS 이미지', extensions: ['xz'] },
+      { name: '모든 파일', extensions: ['*'] },
+    ],
+  });
+  if (canceled || !filePaths?.length) return null;
+  const p = filePaths[0];
+  return { path: p, fileName: path.basename(p), cached: true, verified: false };
 });
 
 // SD 쓰기
