@@ -7,6 +7,44 @@ Same spirit as [`API_CONTRACT.md`](API_CONTRACT.md) — if this contract and
 the actual OS-side script drift apart, the device silently fails to come up
 headless. Changes here require a matching issue in `JLCcom/clawlink`.
 
+## 0a. Correction (2026-07-09) — there is no FAT boot partition on EO1 (#30)
+
+This doc used to say "the SD card's **boot partition**", assuming every board
+lays the card out like a Raspberry Pi (FAT boot + ext4 rootfs). **EO1
+(`opizero3`, Allwinner H618) does not.** Verified directly against the published
+image (`ghcr.io/jlccom/clawlink-edge-os:latest`):
+
+```
+sector 0            MBR
+sector 16..1671     u-boot, raw (eGON.BT0 magic at offset 8 KiB, "sun50i-h618-orangepi")
+sector 1672..8191   all zeros — 3,260 KiB unused
+sector 8192..       p1 = ext4 rootfs (the ONLY partition; /boot is a directory inside it)
+```
+
+Consequences, all confirmed by loop-mounting the real image:
+
+- **Linux** — `mount ${device}1` mounts the *rootfs*, so the old code wrote
+  `/clawlink.conf` while `clawlink-firstboot.sh` reads `/boot/clawlink.conf`.
+- **Windows/macOS** — no FAT volume is mounted at all, so injection can't even start.
+- Worse than a wrong path: `clawlink-firstboot.service` has
+  `ConditionPathExists=/boot/clawlink.conf`, so the service **never starts**.
+  The board boots fine and silently never activates.
+
+**How the Imager behaves now** (`src/partition.js`): it does not trust partition
+numbers. It reads the MBR and each partition's FAT boot sector directly, prefers a
+FAT partition labelled `CLAWLINK`, and falls back to any FAT partition (which keeps
+Raspberry-Pi-style `boot` partitions working). If the card has **no FAT partition at
+all**, injection **fails loudly** instead of writing to the wrong place — a card that
+boots but never activates is the most confusing failure mode there is.
+
+`lsblk`/`blkid` are deliberately not used: both read filesystem type from the udev
+database, which is empty in some environments (containers, fresh boots), and they'd
+report "no filesystem" for a perfectly good FAT partition.
+
+The OS-side half — adding the config partition and making `firstboot` read it — is
+[`JLCcom/clawlink#720`](https://github.com/JLCcom/clawlink/issues/720). Until that
+ships, **EO1 cards cannot be configured by this Imager.**
+
 ## 0. Correction (2026-07-04) — armbian_first_run.txt does NOT do accounts/SSH
 
 An earlier version of this doc, and the main repo's
