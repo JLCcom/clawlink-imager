@@ -10,20 +10,23 @@ const BOARDS = [
   { key: 'opizero2w',label: 'Orange Pi Zero 2W' },
 ];
 
-const CLOUD_URL = 'https://clawlinkai.io';
-
 export default function App() {
   const [serial, setSerial]         = useState('');
   const [serialStatus, setSerialStatus] = useState(null); // null | 'checking' | { valid, sku, status }
-  const [boards, setBoards]         = useState(BOARDS);
-  const [board, setBoard]           = useState('rpi4');
+  const [boards, setBoards]         = useState(() => BOARDS.map(b => ({ ...b, available: false })));
+  const [board, setBoard]           = useState('opizero3');
+  const [osInfo, setOsInfo]         = useState(null);   // os:manifest 응답
+  const [manifestErr, setManifestErr] = useState('');
+  const [image, setImage]           = useState(null);   // 준비된 이미지 { path, fileName, verified, cached }
   const [wifiSsid, setWifiSsid]     = useState('');
   const [wifiPw, setWifiPw]         = useState('');
   const [sshPassword, setSshPassword] = useState('');
   const [sshPubkey, setSshPubkey]     = useState('');
   const [drives, setDrives]         = useState([]);
   const [drive, setDrive]           = useState('');
-  const [phase, setPhase]           = useState('idle'); // idle | downloading | writing | injecting | done | error
+  // 준비(idle→preparing→ready)와 굽기(writing→injecting→done)를 분리한다(#25).
+  const [phase, setPhase]           = useState('idle');
+  const [stage, setStage]           = useState('downloading'); // preparing 중 세부 단계
   const [progress, setProgress]     = useState(0);
   const [errorMsg, setErrorMsg]     = useState('');
   const [langPref, setLangPref]     = useState(() => window.localStorage?.getItem('cl-lang') || 'system');
@@ -32,13 +35,22 @@ export default function App() {
   const lang = resolveLang(langPref === 'system' ? null : langPref);
   const t = getDict(lang);
 
-  // 보드 이미지 목록 로드
   useEffect(() => {
     window.clImager?.getOsManifest().then((m) => {
-      if (m?.boards?.length) setBoards(m.boards.map(b => ({ key: b.board, label: BOARDS.find(x => x.key === b.board)?.label || b.board, available: b.available !== false, file: b.file, sha256: b.sha256 })));
+      if (!m?.ok) { setManifestErr(m?.error || 'unknown'); return; }
+      setOsInfo(m);
+      const published = new Set((m.boards || []).map(b => b.board));
+      setBoards(BOARDS.map(b => ({
+        ...b,
+        available: published.has(b.key),
+        ...(m.boards.find(x => x.board === b.key) || {}),
+      })));
+      // 기본 선택이 발행되지 않은 보드면, 실제로 구울 수 있는 보드로 옮긴다.
+      const first = (m.boards || [])[0];
+      if (first && !published.has(board)) setBoard(first.board);
     });
     window.clImager?.listDrives().then(setDrives);
-    window.clImager?.onDownloadProgress(v => setProgress(v));
+    window.clImager?.onPrepareProgress(({ stage: s, percent }) => { setStage(s); setProgress(percent); });
     window.clImager?.onWriteProgress(() => {});
     // 메뉴의 언어 선택(#18) — 'system'이면 OS/브라우저 로케일로 자동 감지.
     window.clImager?.onSetLanguage((code) => {
@@ -62,23 +74,39 @@ export default function App() {
 
   const refreshDrives = () => window.clImager?.listDrives().then(setDrives);
 
-  const handleBurn = async () => {
-    if (!serialStatus?.valid) return;
-    if (!drive) return;
-    const selectedBoard = boards.find(b => b.key === board);
-    if (!selectedBoard) return;
+  const selectedBoard = boards.find(b => b.key === board);
 
-    setPhase('downloading');
+  // 1단계 — 준비(인터넷 필요). 다운로드 + sha256 검증까지.
+  const handlePrepare = async () => {
+    setPhase('preparing');
     setProgress(0);
+    setStage('downloading');
     setErrorMsg('');
-
     try {
-      const imageUrl = `${CLOUD_URL}/dist/os/${selectedBoard.file}`;
-      const tmpPath = await window.clImager.downloadImage({ url: imageUrl, fileName: selectedBoard.file });
+      setImage(await window.clImager.prepareImage());
+      setPhase('ready');
+    } catch (e) {
+      setErrorMsg(e?.message || String(e));
+      setPhase('error');
+    }
+  };
 
+  const handlePickLocal = async () => {
+    const picked = await window.clImager?.pickLocalImage();
+    if (!picked) return;
+    setErrorMsg('');
+    setImage(picked);
+    setPhase('ready');
+  };
+
+  // 2단계 — 굽기(완전 로컬). 인터넷이 끊겨 있어도 된다.
+  const handleBurn = async () => {
+    if (!canBurn) return;
+    setErrorMsg('');
+    try {
       setPhase('writing');
       setProgress(0);
-      await window.clImager.writeSD({ imagePath: tmpPath, device: drive });
+      await window.clImager.writeSD({ imagePath: image.path, device: drive });
 
       setPhase('injecting');
       await window.clImager.injectBoot({ device: drive, serial, wifiSsid, wifiPw, hwModel: board, sshPassword, sshPubkey });
@@ -86,12 +114,16 @@ export default function App() {
       setPhase('done');
     } catch (e) {
       setErrorMsg(e?.message || String(e));
-      setPhase('error');
+      // 이미지는 이미 준비돼 있다 — 굽기만 다시 누를 수 있게 'ready'로 되돌린다.
+      setPhase('ready');
     }
   };
 
-  const canBurn = serialStatus?.valid && drive && phase === 'idle';
+  const canPrepare = selectedBoard?.available && (phase === 'idle' || phase === 'error');
+  const canBurn    = !!image && !!drive && serialStatus?.valid === true && phase === 'ready';
+  const busy       = phase === 'preparing' || phase === 'writing' || phase === 'injecting';
   const phaseLabel = t.phase[phase] || '';
+  const progressLabel = phase === 'preparing' ? t.stage[stage] : phaseLabel;
 
   return (
     <div className="app">
@@ -122,9 +154,37 @@ export default function App() {
         {/* 보드 선택 */}
         <section className="field">
           <label>{t.boardLabel}</label>
-          <select value={board} onChange={e => setBoard(e.target.value)}>
+          <select value={board} onChange={e => setBoard(e.target.value)} disabled={busy}>
             {boards.map(b => <option key={b.key} value={b.key}>{b.label}{b.available === false ? t.boardPreparing : ''}</option>)}
           </select>
+          {selectedBoard && !selectedBoard.available && !manifestErr && <p className="hint">{t.boardUnavailable}</p>}
+        </section>
+
+        {/* 1단계 — 이미지 준비 (여기까지만 인터넷 필요) */}
+        <section className="field">
+          <label>{t.imageLabel}</label>
+          {manifestErr && <p className="hint err">{t.manifestError}</p>}
+
+          {image ? (
+            <p className="hint">
+              {t.imageReady(image.fileName)}<br />
+              {image.verified ? t.imageVerified : t.imageUnverified}
+              {image.cached && image.verified ? ` ${t.imageCached}` : ''}
+              {osInfo?.osVersion && image.verified ? ` · ${t.imageVersion(osInfo.osVersion)}` : ''}
+            </p>
+          ) : (
+            <>
+              <p className="hint">{t.imageNotPrepared}</p>
+              <p className="hint">{t.imageOfflineHint}</p>
+            </>
+          )}
+
+          <div className="input-row">
+            <button onClick={handlePrepare} disabled={!canPrepare || busy}>
+              {image ? t.imagePrepareRetry : t.imagePrepareBtn}
+            </button>
+            <button onClick={handlePickLocal} disabled={busy}>{t.imageLocalBtn}</button>
+          </div>
         </section>
 
         {/* WiFi */}
@@ -153,16 +213,16 @@ export default function App() {
           <label>{t.sdLabel} <button className="refresh-btn" onClick={refreshDrives}>↻</button></label>
           {drives.length === 0
             ? <p className="hint">{t.sdHint}</p>
-            : <select value={drive} onChange={e => setDrive(e.target.value)}>
+            : <select value={drive} onChange={e => setDrive(e.target.value)} disabled={busy}>
                 <option value="">{t.sdSelect}</option>
                 {drives.map(d => <option key={d.device} value={d.device}>{d.displayName}</option>)}
               </select>}
         </section>
 
         {/* 진행률 */}
-        {phase !== 'idle' && phase !== 'done' && phase !== 'error' && (
+        {busy && (
           <div className="progress-wrap">
-            <div className="progress-label">{phaseLabel}</div>
+            <div className="progress-label">{progressLabel}</div>
             <div className="progress-bar"><div className="progress-fill" style={{ width: `${progress}%` }} /></div>
             <div className="progress-pct">{progress}%</div>
           </div>
@@ -175,16 +235,23 @@ export default function App() {
           </div>
         )}
 
-        {phase === 'error' && <div className="error-msg">⚠️ {errorMsg}</div>}
+        {errorMsg && !busy && <div className="error-msg">⚠️ {errorMsg}</div>}
 
-        {/* 굽기 버튼 */}
-        <button
-          className={`burn-btn ${canBurn ? 'active' : ''}`}
-          disabled={!canBurn}
-          onClick={handleBurn}
-        >
-          {phase === 'idle' ? t.burnStart : phaseLabel}
-        </button>
+        {/* 2단계 — 굽기 (완전 로컬) */}
+        {phase === 'done' ? (
+          <button className="burn-btn active" onClick={() => { setPhase('ready'); setProgress(0); }}>
+            {t.burnAgain}
+          </button>
+        ) : (
+          <button
+            className={`burn-btn ${canBurn ? 'active' : ''}`}
+            disabled={!canBurn}
+            onClick={handleBurn}
+          >
+            {busy ? progressLabel : t.burnStart}
+          </button>
+        )}
+        {!image && phase !== 'done' && <p className="hint">{t.needPrepareHint}</p>}
       </main>
     </div>
   );
