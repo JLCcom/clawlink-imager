@@ -1,6 +1,7 @@
 // main.js — Electron main process
 const { app, BrowserWindow, ipcMain, shell, Menu, dialog } = require('electron');
 const path = require('path');
+const os = require('os');
 const fs = require('fs');
 const { execFile, exec } = require('child_process');
 const https = require('https');
@@ -10,6 +11,7 @@ const { pipeline } = require('stream/promises');
 const log = require('electron-log');
 const drivelist = require('drivelist');
 const ghcr = require('./ghcr');
+const partition = require('./partition');
 
 const IS_DEV = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
@@ -242,54 +244,47 @@ function shellQuote(value) {
 // clawlink.conf 계약 버전 — docs/BOOT_CONTRACT.md §2. 필드를 지우거나 의미를 바꿀 때만 올린다.
 const CLAWLINK_CONF_CONTRACT_VERSION = 1;
 
-// boot 파티션 마운트 + clawlink.conf 주입
-ipcMain.handle('boot:inject', async (_e, { device, serial, wifiSsid, wifiPw, hwModel, sshPassword, sshPubkey }) => {
-  return new Promise((resolve, reject) => {
-    const bootPart = process.platform === 'win32' ? device : `${device}1`;
-    const mountDir = `/tmp/clawlink-boot-${Date.now()}`;
+function buildConf({ serial, wifiSsid, wifiPw, hwModel, sshPassword, sshPubkey }) {
+  return [
+    `CONTRACT_VERSION=${CLAWLINK_CONF_CONTRACT_VERSION}`,
+    `SERIAL=${shellQuote(serial)}`,
+    wifiSsid   ? `WIFI_SSID=${shellQuote(wifiSsid)}`     : '',
+    wifiPw     ? `WIFI_PW=${shellQuote(wifiPw)}`         : '',
+    `HW_MODEL=${shellQuote(hwModel)}`,
+    // BYOD(#13) — 비워두면 OS 쪽(clawlink-firstboot.sh, JLCcom/clawlink#617)이
+    // 고정 기본값(root/1234, clawlink/1234)으로 fallback.
+    sshPassword ? `SSH_PASSWORD=${shellQuote(sshPassword)}` : '',
+    sshPubkey   ? `SSH_PUBKEY=${shellQuote(sshPubkey)}`     : '',
+  ].filter(Boolean).join('\n') + '\n';
+}
 
-    const confContent = [
-      `CONTRACT_VERSION=${CLAWLINK_CONF_CONTRACT_VERSION}`,
-      `SERIAL=${shellQuote(serial)}`,
-      wifiSsid   ? `WIFI_SSID=${shellQuote(wifiSsid)}`     : '',
-      wifiPw     ? `WIFI_PW=${shellQuote(wifiPw)}`         : '',
-      `HW_MODEL=${shellQuote(hwModel)}`,
-      // BYOD(#13) — 비워두면 OS 쪽(clawlink-firstboot.sh, JLCcom/clawlink#617)이
-      // 고정 기본값(root/1234, clawlink/1234)으로 fallback.
-      sshPassword ? `SSH_PASSWORD=${shellQuote(sshPassword)}` : '',
-      sshPubkey   ? `SSH_PUBKEY=${shellQuote(sshPubkey)}`     : '',
-    ].filter(Boolean).join('\n') + '\n';
+// 설정 파티션을 찾아 clawlink.conf 주입 (#30)
+ipcMain.handle('boot:inject', async (_e, opts) => {
+  const { device } = opts;
+  const confContent = buildConf(opts);
 
-    if (process.platform === 'linux') {
-      exec(`mkdir -p ${mountDir} && mount ${bootPart} ${mountDir}`, (err) => {
-        if (err) return reject(err);
-        fs.writeFile(`${mountDir}/clawlink.conf`, confContent, (e2) => {
-          exec(`umount ${mountDir} && rmdir ${mountDir}`, () => {
-            if (e2) reject(e2); else resolve(true);
-          });
-        });
-      });
-    } else if (process.platform === 'win32') {
-      // (실기기 미검증 — #8/#9) 드라이브 문자는 매번 달라질 수 있어 고정값(D:\)을
-      // 쓰면 틀리기 쉽다 — drivelist로 이 물리 디스크가 실제로 마운트된 경로를
-      // 찾는다. Windows는 rootfs(ext4) 파티션은 못 읽으므로 보통 boot(FAT32)
-      // 파티션 하나만 드라이브 문자가 잡힌다.
-      drivelist.list().then((drives) => {
-        const target = drives.find((d) => d.device === device);
-        const mountPath = target?.mountpoints?.[0]?.path;
-        if (!mountPath) {
-          return reject(new Error('boot 파티션의 드라이브 문자를 찾지 못했습니다. SD카드를 다시 꽂고 새로고침 후 시도하세요.'));
-        }
-        fs.writeFile(path.join(mountPath, 'clawlink.conf'), confContent, (e2) => {
-          if (e2) reject(new Error(`boot 파티션 쓰기 실패: ${e2.message}`)); else resolve(true);
-        });
-      }, reject);
-    } else {
-      // macOS: 볼륨이 자동 마운트되므로 직접 파일 쓰기 시도 (실기기 미검증)
-      const bootRoot = `/Volumes/boot`;
-      fs.writeFile(path.join(bootRoot, 'clawlink.conf'), confContent, (e2) => {
-        if (e2) reject(new Error(`boot 파티션 쓰기 실패: ${e2.message}`)); else resolve(true);
-      });
-    }
+  if (process.platform !== 'linux') {
+    const mountPath = await partition.findMountedVolume(drivelist, device);
+    if (!mountPath) throw new Error(partition.NO_FAT_PARTITION_MSG);
+    await fs.promises.writeFile(path.join(mountPath, 'clawlink.conf'), confContent);
+    return true;
+  }
+
+  // dd 직후엔 커널이 아직 옛 파티션 테이블을 들고 있다 — 다시 읽게 한 뒤 찾는다.
+  await new Promise((res) => exec(`blockdev --rereadpt ${device}`, () => res()));
+
+  const part = await partition.findFatPartitionLinux(device);
+  if (!part) throw new Error(partition.NO_FAT_PARTITION_MSG);
+
+  const mountDir = path.join(os.tmpdir(), `clawlink-cfg-${Date.now()}`);
+  await fs.promises.mkdir(mountDir, { recursive: true });
+  await new Promise((resolve, reject) => {
+    exec(`mount -t vfat ${part} ${mountDir}`, (err) => (err ? reject(err) : resolve()));
   });
+  try {
+    await fs.promises.writeFile(path.join(mountDir, 'clawlink.conf'), confContent);
+  } finally {
+    await new Promise((res) => exec(`umount ${mountDir} && rmdir ${mountDir}`, () => res()));
+  }
+  return true;
 });
