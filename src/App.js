@@ -51,7 +51,9 @@ export default function App() {
     });
     window.clImager?.listDrives().then(setDrives);
     window.clImager?.onPrepareProgress(({ stage: s, percent }) => { setStage(s); setProgress(percent); });
-    window.clImager?.onWriteProgress(() => {});
+    // 굽기는 main 이 단계(writing/injecting)와 진행률을 같이 보낸다 — 권한 상승이 한 번뿐이라
+    // 두 단계가 한 호출 안에서 이어진다.
+    window.clImager?.onBurnProgress(({ phase: p, percent }) => { setPhase(p); setProgress(percent); });
     // 메뉴의 언어 선택(#18) — 'system'이면 OS/브라우저 로케일로 자동 감지.
     window.clImager?.onSetLanguage((code) => {
       setLangPref(code);
@@ -100,17 +102,17 @@ export default function App() {
   };
 
   // 2단계 — 굽기(완전 로컬). 인터넷이 끊겨 있어도 된다.
+  // 리눅스/맥은 여기서 한 번 권한 상승 프롬프트가 뜬다(#9).
   const handleBurn = async () => {
     if (!canBurn) return;
     setErrorMsg('');
     try {
       setPhase('writing');
       setProgress(0);
-      await window.clImager.writeSD({ imagePath: image.path, device: drive });
-
-      setPhase('injecting');
-      await window.clImager.injectBoot({ device: drive, serial, wifiSsid, wifiPw, hwModel: board, sshPassword, sshPubkey });
-
+      await window.clImager.burnSD({
+        imagePath: image.path, device: drive,
+        serial, wifiSsid, wifiPw, hwModel: board, sshPassword, sshPubkey,
+      });
       setPhase('done');
     } catch (e) {
       setErrorMsg(e?.message || String(e));

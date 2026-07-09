@@ -24,8 +24,7 @@
     },
     "files": [
       "build/**/*",
-      "src/main.js",
-      "src/preload.js",
+      "src/**/*",
       "node_modules/**/*"
     ],
     "win": {
@@ -45,7 +44,13 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
-    }
+    },
+    "extraResources": [
+      {
+        "from": "resources/clawlink-burn.sh",
+        "to": "clawlink-burn.sh"
+      }
+    ]
   },
   "dependencies": {
     "axios": "^1.6.0",
