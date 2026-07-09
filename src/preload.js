@@ -7,9 +7,8 @@ contextBridge.exposeInMainWorld('clImager', {
   listDrives:     ()         => ipcRenderer.invoke('drives:list'),
   prepareImage:   ()         => ipcRenderer.invoke('image:prepare'),
   pickLocalImage: ()         => ipcRenderer.invoke('image:pickLocal'),
-  writeSD:        (opts)     => ipcRenderer.invoke('sd:write', opts),
-  injectBoot:     (opts)     => ipcRenderer.invoke('boot:inject', opts),
+  burnSD:         (opts)     => ipcRenderer.invoke('sd:burn', opts),
   onPrepareProgress:  (fn)   => ipcRenderer.on('prepare:progress', (_e, p) => fn(p)),
-  onWriteProgress:    (fn)   => ipcRenderer.on('write:progress',    (_e, v) => fn(v)),
+  onBurnProgress:     (fn)   => ipcRenderer.on('burn:progress',    (_e, p) => fn(p)),
   onSetLanguage:      (fn)   => ipcRenderer.on('set-language', (_e, code) => fn(code)),
 });

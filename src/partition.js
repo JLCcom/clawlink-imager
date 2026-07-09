@@ -96,6 +96,56 @@ async function findFatPartitions(diskPath) {
   }
 }
 
+/** 이미 메모리에 있는 디스크 앞부분에서 FAT 파티션을 찾는다. 부트섹터가 읽어온 범위 밖이면 건너뛴다. */
+function findFatPartitionsInBuffer(head) {
+  const found = [];
+  for (const p of parseMbr(head.subarray(0, SECTOR))) {
+    if (!FAT_PART_TYPES.has(p.type)) continue;
+    const off = p.lbaStart * SECTOR;
+    if (off + SECTOR > head.length) continue;
+    const fat = readFatBootSector(head.subarray(off, off + SECTOR));
+    if (fat) found.push({ ...p, ...fat });
+  }
+  return found;
+}
+
+// 설정 파티션은 디스크 앞쪽에 있다(EO1 은 1.5MiB, RPi 는 4MiB). 넉넉히 16MiB 만 본다.
+const IMAGE_HEAD_BYTES = 16 * 1024 * 1024;
+
+/** .xz 를 앞에서부터 필요한 만큼만 풀어 읽는다. 275MB 를 다 풀 이유가 없다. */
+async function readXzHead(xzPath, bytes) {
+  const { XzReadableStream } = require('xz-decompress');
+  const { Readable } = require('stream');
+
+  const file = fs.createReadStream(xzPath);
+  const chunks = [];
+  let total = 0;
+  try {
+    const web = new XzReadableStream(Readable.toWeb(file));
+    for await (const chunk of Readable.fromWeb(web)) {
+      chunks.push(chunk);
+      total += chunk.length;
+      if (total >= bytes) break;
+    }
+  } finally {
+    file.destroy();
+  }
+  return Buffer.concat(chunks).subarray(0, bytes);
+}
+
+/**
+ * 아직 굽지 않은 이미지에서 설정 파티션 번호를 알아낸다.
+ * dd 는 MBR 을 그대로 복사하므로 이미지의 파티션 번호 = SD카드의 파티션 번호다.
+ * 덕분에 파티션 탐지를 root 없이(= 권한 상승 전에) 끝낼 수 있다 (#9).
+ * 반환: 파티션 번호(1~4) 또는 null
+ */
+async function findFatPartitionIndexForImage(imagePath) {
+  const parts = imagePath.endsWith('.xz')
+    ? findFatPartitionsInBuffer(await readXzHead(imagePath, IMAGE_HEAD_BYTES))
+    : await findFatPartitions(imagePath);
+  return pickFat(parts)?.index ?? null;
+}
+
 /**
  * `/dev/sdb` + 2 → `/dev/sdb2`, `/dev/mmcblk0` + 2 → `/dev/mmcblk0p2`.
  * 숫자로 끝나는 디바이스는 `p`를 끼워 넣는 게 리눅스 관례다(mmcblk·nvme·loop).
@@ -145,5 +195,6 @@ const NO_FAT_PARTITION_MSG =
 module.exports = {
   CONFIG_PART_LABEL, FAT_PART_TYPES, NO_FAT_PARTITION_MSG,
   parseMbr, readFatBootSector, pickFat, partitionNodePath,
-  findFatPartitions, findFatPartitionLinux, findMountedVolume,
+  findFatPartitions, findFatPartitionsInBuffer, findFatPartitionIndexForImage,
+  findFatPartitionLinux, findMountedVolume,
 };

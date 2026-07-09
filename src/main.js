@@ -3,7 +3,7 @@ const { app, BrowserWindow, ipcMain, shell, Menu, dialog } = require('electron')
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const { execFile, exec } = require('child_process');
+const { execFile } = require('child_process');
 const https = require('https');
 const http = require('http');
 const { Readable } = require('stream');
@@ -12,6 +12,7 @@ const log = require('electron-log');
 const drivelist = require('drivelist');
 const ghcr = require('./ghcr');
 const partition = require('./partition');
+const elevate = require('./elevate');
 
 const IS_DEV = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
@@ -137,7 +138,7 @@ ipcMain.handle('os:manifest', async () => {
   }
 });
 
-// 이동식 드라이브만 남기는 안전 기준 — sd:write 쓰기 직전 재검증(#5)에서도 그대로 재사용
+// 이동식 드라이브만 남기는 안전 기준 — sd:burn 쓰기 직전 재검증(#5)에서도 그대로 재사용
 function isSafeSdDrive(d) {
   return d.isRemovable && d.size > 1_000_000_000;
 }
@@ -189,50 +190,6 @@ ipcMain.handle('image:pickLocal', async () => {
   return { path: p, fileName: path.basename(p), cached: true, verified: false };
 });
 
-// SD 쓰기
-ipcMain.handle('sd:write', async (e, { imagePath, device }) => {
-  // #5 — renderer가 보내는 device 문자열을 그대로 믿지 않고, 쓰기 직전 다시 한 번
-  // 실제 드라이브 목록에서 같은 안전 기준(이동식 · 1GB 이상)으로 재확인한다.
-  // (드라이브가 그 사이 빠졌거나, 다른 드라이브로 교체됐을 수 있음)
-  const freshDrives = await drivelist.list();
-  const match = freshDrives.find(d => d.device === device && isSafeSdDrive(d));
-  if (!match) {
-    throw new Error('선택한 드라이브를 다시 찾을 수 없습니다. SD카드를 확인하고 목록을 새로고침하세요.');
-  }
-
-  if (process.platform === 'win32') {
-    // (실기기 미검증 — #8) Windows에는 7z·dd가 기본으로 없어서 예전 코드가 그냥 실패했다.
-    // 외부 바이너리를 번들링하는 대신, xz 해제를 순수 JS(WASM, xz-decompress)로 하고
-    // drivelist가 주는 원본 디바이스 경로(\\.\PhysicalDriveN)에 Node fs로 직접 쓴다 —
-    // Etcher·RPi Imager와 같은 원리(관리자 권한 필요 — package.json의
-    // win.requestedExecutionLevel=requireAdministrator로 앱 실행 시 UAC 요청, #9).
-    const { XzReadableStream } = require('xz-decompress');
-    const total = fs.statSync(imagePath).size; // 압축 파일 크기 기준 — 진행률은 근사치
-    let compressedRead = 0;
-    const compressedStream = fs.createReadStream(imagePath);
-    compressedStream.on('data', (chunk) => {
-      compressedRead += chunk.length;
-      e.sender.send('write:progress', Math.round((compressedRead / total) * 100));
-    });
-    const decompressed = Readable.fromWeb(new XzReadableStream(Readable.toWeb(compressedStream)));
-    const out = fs.createWriteStream(device, { flags: 'w' });
-    await pipeline(decompressed, out);
-    return true;
-  }
-
-  // Linux/Mac: xzcat | dd (실기기 검증 별도 — #11)
-  return new Promise((resolve, reject) => {
-    const cmd = `xzcat "${imagePath}" | dd of="${device}" bs=4M status=progress`;
-    const child = exec(cmd, (err) => {
-      if (err) reject(err); else resolve(true);
-    });
-    child.stderr?.on('data', (d) => {
-      const m = d.toString().match(/(\d+) bytes/);
-      if (m) e.sender.send('write:progress', parseInt(m[1]));
-    });
-  });
-});
-
 // clawlink-firstboot.sh(메인 repo)가 clawlink.conf를 `source`로 읽기 때문에,
 // 값에 $·`·공백·따옴표가 들어가면 파일이 깨지거나 최악의 경우 root 권한으로
 // 임의 shell 명령이 실행될 수 있다(#6). 작은따옴표로 감싸고 내부 작은따옴표만
@@ -258,33 +215,101 @@ function buildConf({ serial, wifiSsid, wifiPw, hwModel, sshPassword, sshPubkey }
   ].filter(Boolean).join('\n') + '\n';
 }
 
-// 설정 파티션을 찾아 clawlink.conf 주입 (#30)
-ipcMain.handle('boot:inject', async (_e, opts) => {
-  const { device } = opts;
-  const confContent = buildConf(opts);
+// 권한이 필요한 일(dd·mount)을 모아 둔 헬퍼. 패키징되면 resources/ 로 들어간다.
+function burnScriptPath() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'clawlink-burn.sh')
+    : path.join(__dirname, '..', 'resources', 'clawlink-burn.sh');
+}
 
-  if (process.platform !== 'linux') {
+// dd 는 진행률을 `\r` 로 덮어쓰며 낸다(`123456 bytes (123 MB, ...) copied`). 한 번에 여러 개가
+// 몰려올 수 있으니 마지막 값을 쓴다.
+function lastDdBytes(text) {
+  const re = /(\d+) bytes/g;
+  let match;
+  let last = null;
+  while ((match = re.exec(text))) last = match[1];
+  return last;
+}
+
+// 압축 푼 크기를 알아야 진행률을 % 로 낼 수 있다. xz 헤더에 들어 있다.
+function uncompressedSize(imagePath) {
+  if (!imagePath.endsWith('.xz')) {
+    try { return fs.statSync(imagePath).size; } catch { return 0; }
+  }
+  return new Promise((resolve) => {
+    execFile('xz', ['--robot', '-l', imagePath], (err, stdout) => {
+      if (err) return resolve(0);
+      const totals = stdout.split('\n').find((l) => l.startsWith('totals'));
+      resolve(totals ? parseInt(totals.split('\t')[4], 10) || 0 : 0);
+    });
+  });
+}
+
+// SD 쓰기 + 설정 주입 (#9). 권한 상승은 한 번만 — 두 단계를 따로 승격하면
+// 사용자가 암호를 두 번 넣어야 한다.
+ipcMain.handle('sd:burn', async (e, opts) => {
+  const { imagePath, device } = opts;
+
+  // #5 — renderer가 보내는 device 문자열을 그대로 믿지 않고, 쓰기 직전 다시 한 번
+  // 실제 드라이브 목록에서 같은 안전 기준(이동식 · 1GB 이상)으로 재확인한다.
+  const freshDrives = await drivelist.list();
+  if (!freshDrives.find((d) => d.device === device && isSafeSdDrive(d))) {
+    throw new Error('선택한 드라이브를 다시 찾을 수 없습니다. SD카드를 확인하고 목록을 새로고침하세요.');
+  }
+
+  // 설정 파티션 번호는 굽기 전에 이미지에서 알아낸다 — dd 가 MBR 을 그대로 복사하므로
+  // 이미지의 파티션 번호가 곧 SD카드의 파티션 번호다. 덕분에 권한 상승 전에 끝난다.
+  const partIndex = await partition.findFatPartitionIndexForImage(imagePath);
+  const progress = (phase, percent) => e.sender.send('burn:progress', { phase, percent });
+
+  if (process.platform === 'win32') {
+    // Windows 는 앱 자체가 관리자로 뜬다(package.json requestedExecutionLevel) — 승격 불필요.
+    // 7z·dd 가 없으므로 xz 해제를 순수 JS(WASM)로 하고 \\.\PhysicalDriveN 에 직접 쓴다.
+    // (실기기 미검증 — #8)
+    const { XzReadableStream } = require('xz-decompress');
+    const total = fs.statSync(imagePath).size; // 압축 파일 크기 기준 — 진행률은 근사치
+    let read = 0;
+    const compressed = fs.createReadStream(imagePath);
+    compressed.on('data', (chunk) => {
+      read += chunk.length;
+      progress('writing', Math.round((read / total) * 100));
+    });
+    await pipeline(
+      Readable.fromWeb(new XzReadableStream(Readable.toWeb(compressed))),
+      fs.createWriteStream(device, { flags: 'w' })
+    );
+
+    progress('injecting', 100);
     const mountPath = await partition.findMountedVolume(drivelist, device);
     if (!mountPath) throw new Error(partition.NO_FAT_PARTITION_MSG);
-    await fs.promises.writeFile(path.join(mountPath, 'clawlink.conf'), confContent);
+    await fs.promises.writeFile(path.join(mountPath, 'clawlink.conf'), buildConf(opts));
     return true;
   }
 
-  // dd 직후엔 커널이 아직 옛 파티션 테이블을 들고 있다 — 다시 읽게 한 뒤 찾는다.
-  await new Promise((res) => exec(`blockdev --rereadpt ${device}`, () => res()));
+  // Linux/macOS — clawlink.conf 를 임시 파일로 넘긴다. WiFi 비번이 들어가므로 0600 으로
+  // 만들고 끝나면 지운다. 명령줄 인자로 넘기면 다른 프로세스에 그대로 보인다.
+  const confPath = path.join(os.tmpdir(), `clawlink-conf-${Date.now()}`);
+  await fs.promises.writeFile(confPath, buildConf(opts), { mode: 0o600 });
 
-  const part = await partition.findFatPartitionLinux(device);
-  if (!part) throw new Error(partition.NO_FAT_PARTITION_MSG);
-
-  const mountDir = path.join(os.tmpdir(), `clawlink-cfg-${Date.now()}`);
-  await fs.promises.mkdir(mountDir, { recursive: true });
-  await new Promise((resolve, reject) => {
-    exec(`mount -t vfat ${part} ${mountDir}`, (err) => (err ? reject(err) : resolve()));
-  });
+  const total = await uncompressedSize(imagePath);
   try {
-    await fs.promises.writeFile(path.join(mountDir, 'clawlink.conf'), confContent);
+    await elevate.runElevated(
+      process.platform,
+      burnScriptPath(),
+      [imagePath, device, partIndex ? String(partIndex) : '', confPath],
+      (text) => {
+        const phase = text.match(/CLPHASE (\w+)/);
+        if (phase) return progress(phase[1], phase[1] === 'injecting' ? 100 : 0);
+        const bytes = lastDdBytes(text);
+        if (bytes && total > 0) progress('writing', Math.min(100, Math.round((bytes / total) * 100)));
+      }
+    );
   } finally {
-    await new Promise((res) => exec(`umount ${mountDir} && rmdir ${mountDir}`, () => res()));
+    await fs.promises.rm(confPath, { force: true });
   }
+
+  // 이미지는 정상적으로 써졌다 — 다만 설정을 심을 곳이 없었다. 카드는 수동 설치 모드로 쓸 수 있다.
+  if (!partIndex) throw new Error(partition.NO_FAT_PARTITION_MSG);
   return true;
 });
