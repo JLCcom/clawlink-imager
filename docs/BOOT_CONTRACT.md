@@ -41,9 +41,48 @@ boots but never activates is the most confusing failure mode there is.
 database, which is empty in some environments (containers, fresh boots), and they'd
 report "no filesystem" for a perfectly good FAT partition.
 
-The OS-side half — adding the config partition and making `firstboot` read it — is
-[`JLCcom/clawlink#720`](https://github.com/JLCcom/clawlink/issues/720). Until that
-ships, **EO1 cards cannot be configured by this Imager.**
+The settled layout this detection targets is in §0b.
+
+## 0b. Settled (2026-07-09) — the EO1 config partition (#30 · clawlink#720)
+
+`JLCcom/clawlink#720` (PR #724) added the config partition. **This is the layout the
+Imager writes to.** Do not change it without a matching issue in both repos.
+
+```
+sector 0             MBR — table entry 1 = rootfs, table entry 2 = config
+sector 16..1671      u-boot, raw (untouched — verified byte-identical before/after)
+sector 3072..8191    config partition · 2.5 MiB · type 0x0e (W95 FAT16 LBA) · LABEL=CLAWLINK
+sector 8192..        rootfs (ext4) — still MBR table entry 1
+```
+
+Two things about this layout are load-bearing and easy to get wrong:
+
+- **The config partition sits physically first but is table entry _2_.** u-boot's
+  `boot.cmd` hardcodes `part uuid mmc 0:1`, and a partition-less `load` resolves to
+  entry 1 — so rootfs has to stay entry 1 or the board won't boot. Table order need
+  not match disk order (`sfdisk` warns; that's all).
+- **rootfs must stay the last partition on disk.** `armbian-resize-filesystem`
+  refuses to expand ("The target partition isn't the last partition in logical
+  layout") if anything follows it, which would strand the card at 1.3 GB.
+
+It's **FAT16, not FAT32** — FAT32 can't be created in a 2.5 MiB space (too few
+clusters). `mkfs.fat -F16 -s1` gives 5,047 clusters.
+
+OS side reads it like this (`clawlink-firstboot.sh`): if `/boot/clawlink.conf` is
+absent and `blkid -L CLAWLINK` finds the partition, it mounts it read-only at
+`/run/clawlink-config` and reads `clawlink.conf` from there. The old
+`/boot/clawlink.conf` path stays as the fallback for boards that do have a FAT boot
+partition. `ConditionPathExists=/boot/clawlink.conf` was **removed** from the service
+unit — with it, a correctly configured EO1 card would never start the service.
+
+**Windows 10 1703+ is now required** — assigning a drive letter to the *second*
+partition of removable media needs it. This was the accepted cost of keeping rootfs
+as entry 1; see `clawlink#720`.
+
+Still unverified until real hardware ([#11](https://github.com/JLCcom/clawlink-imager/issues/11)):
+whether BROM/u-boot behaves with a partition table whose entry order differs from disk
+order. BROM reads raw offset 8 KiB and never looks at the table, so the risk is
+believed low — but the board is the final word.
 
 ## 0. Correction (2026-07-04) — armbian_first_run.txt does NOT do accounts/SSH
 
