@@ -7,7 +7,6 @@ const { execFile } = require('child_process');
 const https = require('https');
 const http = require('http');
 const { Readable } = require('stream');
-const { pipeline } = require('stream/promises');
 const log = require('electron-log');
 const drivelist = require('drivelist');
 const ghcr = require('./ghcr');
@@ -250,6 +249,45 @@ function uncompressedSize(imagePath) {
   });
 }
 
+// Windows 물리 디스크 경로(\\.\PhysicalDriveN)에서 디스크 번호만 뽑아낸다.
+function getDiskNumberFromDevice(device) {
+  const m = /PhysicalDrive(\d+)/i.exec(device);
+  if (!m) throw new Error(`디스크 번호를 device 경로에서 못 찾음: ${device}`);
+  return m[1];
+}
+
+function runPowerShell(script) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', script],
+      (err, stdout, stderr) => {
+        if (err) return reject(new Error(`PowerShell 실패: ${stderr || stdout || err.message}`));
+        resolve(stdout);
+      }
+    );
+  });
+}
+
+// 쓰기 전 이 디스크의 볼륨(드라이브 문자)을 전부 뗀다 — diskpart 의 `offline disk` 는
+// 이동식 미디어(USB SD 리더)에서 "이 작업을 지원하지 않습니다" 로 거부되므로(실기기 확인),
+// 대신 파티션 단위로 드라이브 문자만 제거해 탐색기/파일시스템의 점유를 푼다. 안 풀면
+// 새 파티션 테이블을 쓰는 도중 Windows 가 디스크 상태 변화를 감지해 핸들을 무효화한다(EBADF).
+async function releaseDiskVolumes(diskNum) {
+  await runPowerShell(
+    `Get-Partition -DiskNumber ${diskNum} | ForEach-Object { ` +
+    `if ($_.DriveLetter) { ` +
+    `Remove-PartitionAccessPath -DiskNumber ${diskNum} -PartitionNumber $_.PartitionNumber -AccessPath ("$($_.DriveLetter):\\") -ErrorAction SilentlyContinue ` +
+    `} }`
+  );
+}
+
+// 쓰기 후 Windows 가 새 파티션 테이블을 다시 읽게 한다 — 안 하면 findMountedVolume 이
+// 새로 생긴 설정 파티션에 드라이브 문자가 잡히는 걸 못 본다.
+async function rescanDisks() {
+  await runPowerShell('Update-HostStorageCache');
+}
+
 // SD 쓰기 + 설정 주입 (#9). 권한 상승은 한 번만 — 두 단계를 따로 승격하면
 // 사용자가 암호를 두 번 넣어야 한다.
 ipcMain.handle('sd:burn', async (e, opts) => {
@@ -270,19 +308,43 @@ ipcMain.handle('sd:burn', async (e, opts) => {
   if (process.platform === 'win32') {
     // Windows 는 앱 자체가 관리자로 뜬다(package.json requestedExecutionLevel) — 승격 불필요.
     // 7z·dd 가 없으므로 xz 해제를 순수 JS(WASM)로 하고 \\.\PhysicalDriveN 에 직접 쓴다.
-    // (실기기 미검증 — #8)
-    const { XzReadableStream } = require('xz-decompress');
-    const total = fs.statSync(imagePath).size; // 압축 파일 크기 기준 — 진행률은 근사치
-    let read = 0;
-    const compressed = fs.createReadStream(imagePath);
-    compressed.on('data', (chunk) => {
-      read += chunk.length;
-      progress('writing', Math.round((read / total) * 100));
-    });
-    await pipeline(
-      Readable.fromWeb(new XzReadableStream(Readable.toWeb(compressed))),
-      fs.createWriteStream(device, { flags: 'w' })
-    );
+    // (실기기 검증 중 EBADF 발견 — 볼륨 드라이브 문자를 떼도 재현됨. fs.createWriteStream
+    //  의 내부 위치 추적이 raw 디바이스 fd 에서 어긋나는 것으로 보여, 스트림 대신 파일
+    //  핸들을 직접 열어 위치를 명시하며 쓰는 저수준 방식으로 바꾼다.)
+    const diskNum = getDiskNumberFromDevice(device);
+    await releaseDiskVolumes(diskNum);
+    try {
+      const { XzReadableStream } = require('xz-decompress');
+      const total = fs.statSync(imagePath).size; // 압축 파일 크기 기준 — 진행률은 근사치
+      let read = 0;
+      const compressed = fs.createReadStream(imagePath);
+      compressed.on('data', (chunk) => {
+        read += chunk.length;
+        progress('writing', Math.round((read / total) * 100));
+      });
+      const decompressed = Readable.fromWeb(new XzReadableStream(Readable.toWeb(compressed)));
+
+      const fd = await fs.promises.open(device, 'r+');
+      try {
+        let position = 0;
+        for await (const chunk of decompressed) {
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          let off = 0;
+          while (off < buf.length) {
+            const { bytesWritten } = await fd.write(buf, off, buf.length - off, position + off);
+            if (bytesWritten <= 0) throw new Error('디스크 쓰기가 진행되지 않습니다(bytesWritten=0).');
+            off += bytesWritten;
+          }
+          position += buf.length;
+        }
+      } finally {
+        await fd.close();
+      }
+    } finally {
+      // Windows 가 새 파티션 테이블을 다시 읽게 — 안 하면 findMountedVolume 이
+      // 새로 생긴 설정 파티션에 드라이브 문자가 잡히는 걸 못 본다.
+      await rescanDisks();
+    }
 
     progress('injecting', 100);
     const mountPath = await partition.findMountedVolume(drivelist, device);
