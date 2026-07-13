@@ -44,6 +44,8 @@ const dict = {
     doneMsg2: '첫 부팅 시 자동으로 ClawLink 엣지가 설치됩니다.',
     burnStart: '굽기 시작',
     burnAgain: '다른 SD 카드 굽기',
+    resetFieldsBtn: '초기화',
+    resetFieldsHint: '입력한 시리얼·WiFi·SSH 값을 전부 지웁니다',
   },
   en: {
     serialLabel: 'Serial number',
@@ -87,6 +89,8 @@ const dict = {
     doneMsg2: 'ClawLink edge installs itself automatically on first boot.',
     burnStart: 'Start burning',
     burnAgain: 'Burn another SD card',
+    resetFieldsBtn: 'Reset',
+    resetFieldsHint: 'Clear the saved serial, WiFi, and SSH values',
   },
 };
 
