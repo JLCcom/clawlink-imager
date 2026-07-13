@@ -113,24 +113,28 @@ ipcMain.handle('serial:check', async (_e, serial) => {
 // 조용히 "굽을 이미지가 없음" 상태가 된다.
 ipcMain.handle('os:manifest', async () => {
   try {
-    const info = await ghcr.describeLatest();
+    const list = await ghcr.describeAllBoards();
+    if (!list.length) return { ok: false, error: 'no boards published', boards: [] };
+    const first = list[0];
     return {
       ok: true,
-      ref: info.ref,
-      osVersion: info.osVersion,
-      version: info.version,
-      revision: info.revision,
-      osBase: info.osBase,
-      docker: info.docker,
-      updated: info.built,
-      boards: [{
+      ref: first.ref,
+      osVersion: first.osVersion,
+      version: first.version,
+      revision: first.revision,
+      osBase: first.osBase,
+      docker: first.docker,
+      updated: first.built,
+      boards: list.map((info) => ({
         board: info.board,
         file: info.image.file,
         sha256: info.image.sha256,
         size: info.image.size,
         date: info.built,
+        osVersion: info.osVersion,
+        version: info.version,
         available: true,
-      }],
+      })),
     };
   } catch (e) {
     log.error('os:manifest error', e);
@@ -164,8 +168,8 @@ function imageCacheDir() {
   return path.join(app.getPath('userData'), 'image-cache');
 }
 
-ipcMain.handle('image:prepare', async (e) => {
-  const info = await ghcr.describeLatest();
+ipcMain.handle('image:prepare', async (e, board) => {
+  const info = board ? await ghcr.describeBoard(board) : await ghcr.describeLatest();
   const result = await ghcr.prepareImage({
     cacheDir: imageCacheDir(),
     info,

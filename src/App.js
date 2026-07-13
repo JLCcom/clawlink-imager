@@ -85,7 +85,7 @@ export default function App() {
     setStage('downloading');
     setErrorMsg('');
     try {
-      setImage(await window.clImager.prepareImage());
+      setImage(await window.clImager.prepareImage(board));
       setPhase('ready');
     } catch (e) {
       setErrorMsg(e?.message || String(e));
@@ -172,7 +172,7 @@ export default function App() {
               {t.imageReady(image.fileName)}<br />
               {image.verified ? t.imageVerified : t.imageUnverified}
               {image.cached && image.verified ? ` ${t.imageCached}` : ''}
-              {osInfo?.osVersion && image.verified ? ` · ${t.imageVersion(osInfo.osVersion)}` : ''}
+              {image.osVersion && image.verified ? ` · ${t.imageVersion(image.osVersion)}` : ''}
             </p>
           ) : (
             <>
