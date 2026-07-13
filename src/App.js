@@ -10,18 +10,25 @@ const BOARDS = [
   { key: 'opizero2w',label: 'Orange Pi Zero 2W' },
 ];
 
+// 입력 필드 기억 — 매번 앱을 다시 설치/실행할 때마다 시리얼·WiFi·SSH를 새로 치는 게
+// 너무 불편하다는 실사용 피드백으로 추가. 로컬(이 PC)에만 저장되고 어디로도 전송되지 않는다.
+const SAVED_FIELDS_KEY = 'cl-imager-fields';
+function loadSavedFields() {
+  try { return JSON.parse(window.localStorage?.getItem(SAVED_FIELDS_KEY) || '{}'); } catch { return {}; }
+}
+
 export default function App() {
-  const [serial, setSerial]         = useState('');
+  const [serial, setSerial]         = useState(() => loadSavedFields().serial || '');
   const [serialStatus, setSerialStatus] = useState(null); // null | 'checking' | { valid, sku, status }
   const [boards, setBoards]         = useState(() => BOARDS.map(b => ({ ...b, available: false })));
-  const [board, setBoard]           = useState('opizero3');
+  const [board, setBoard]           = useState(() => loadSavedFields().board || 'opizero3');
   const [osInfo, setOsInfo]         = useState(null);   // os:manifest 응답
   const [manifestErr, setManifestErr] = useState('');
   const [image, setImage]           = useState(null);   // 준비된 이미지 { path, fileName, verified, cached }
-  const [wifiSsid, setWifiSsid]     = useState('');
-  const [wifiPw, setWifiPw]         = useState('');
-  const [sshPassword, setSshPassword] = useState('');
-  const [sshPubkey, setSshPubkey]     = useState('');
+  const [wifiSsid, setWifiSsid]     = useState(() => loadSavedFields().wifiSsid || '');
+  const [wifiPw, setWifiPw]         = useState(() => loadSavedFields().wifiPw || '');
+  const [sshPassword, setSshPassword] = useState(() => loadSavedFields().sshPassword || '');
+  const [sshPubkey, setSshPubkey]     = useState(() => loadSavedFields().sshPubkey || '');
   const [drives, setDrives]         = useState([]);
   const [drive, setDrive]           = useState('');
   // 준비(idle→preparing→ready)와 굽기(writing→injecting→done)를 분리한다(#25).
@@ -45,9 +52,10 @@ export default function App() {
         available: published.has(b.key),
         ...(m.boards.find(x => x.board === b.key) || {}),
       })));
-      // 기본 선택이 발행되지 않은 보드면, 실제로 구울 수 있는 보드로 옮긴다.
+      // board 키 자체가 알 수 없는 값일 때만 옮긴다 — "발행 안 됨"은 로컬 파일 선택으로
+      // 여전히 구울 수 있으므로, 기억해둔 선택(예: rpi5)을 매번 덮어쓰지 않는다.
       const first = (m.boards || [])[0];
-      if (first && !published.has(board)) setBoard(first.board);
+      if (first && !BOARDS.some(b => b.key === board)) setBoard(first.board);
     });
     window.clImager?.listDrives().then(setDrives);
     window.clImager?.onPrepareProgress(({ stage: s, percent }) => { setStage(s); setProgress(percent); });
@@ -73,6 +81,24 @@ export default function App() {
       setSerialStatus(r || { valid: false, error: 'no_response' });
     }, 500);
   }, []);
+
+  // 입력값 기억 — 바뀔 때마다 로컬에 저장(다음 실행 때 자동으로 채워짐).
+  useEffect(() => {
+    window.localStorage?.setItem(SAVED_FIELDS_KEY, JSON.stringify({
+      serial, board, wifiSsid, wifiPw, sshPassword, sshPubkey,
+    }));
+  }, [serial, board, wifiSsid, wifiPw, sshPassword, sshPubkey]);
+
+  const handleResetFields = () => {
+    window.localStorage?.removeItem(SAVED_FIELDS_KEY);
+    setSerial('');
+    setSerialStatus(null);
+    setBoard('opizero3');
+    setWifiSsid('');
+    setWifiPw('');
+    setSshPassword('');
+    setSshPubkey('');
+  };
 
   const refreshDrives = () => window.clImager?.listDrives().then(setDrives);
 
@@ -132,6 +158,9 @@ export default function App() {
       <header className="app-header">
         <span className="logo">⬡</span>
         <span className="title">ClawLink Imager</span>
+        <button className="reset-btn" onClick={handleResetFields} disabled={busy} title={t.resetFieldsHint}>
+          {t.resetFieldsBtn}
+        </button>
       </header>
 
       <main>
