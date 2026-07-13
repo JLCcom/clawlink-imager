@@ -15,6 +15,12 @@ const REGISTRY = 'ghcr.io';
 const REPO = 'jlccom/clawlink-edge-os';
 const TAG = 'latest';
 
+// 멀티보드(#788) — 보드별로 별도 태그(`<board>-latest`)에 게시된다. opizero3(EO1)는
+// 구버전 imager 호환을 위해 태그 없는 `latest` 도 계속 유지(release-edge-os-image.sh 가 이중 push).
+//   그래서 opizero3 만 `<board>-latest` 조회 실패 시 구태그로 폴백한다.
+const KNOWN_BOARDS = ['opizero3', 'opizero2w', 'rpi3', 'rpi4', 'rpi5'];
+const LEGACY_TAG_BOARD = 'opizero3';
+
 const MANIFEST_ACCEPT = 'application/vnd.oci.image.manifest.v1+json';
 const TITLE_ANNOTATION = 'org.opencontainers.image.title';
 
@@ -92,12 +98,12 @@ function findLayer(layers, predicate) {
 }
 
 /**
- * 최신 OS 이미지 아티팩트의 메타데이터. 바이너리는 받지 않는다.
+ * 주어진 태그의 OS 이미지 아티팩트 메타데이터. 바이너리는 받지 않는다.
  * 반환: { board, osVersion, version, revision, built, image:{file,digest,size}, releases }
  */
-async function describeLatest() {
+async function describeTag(tag) {
   const manifest = JSON.parse(
-    (await readAll(await ghcrGet(`/manifests/${TAG}`, { Accept: MANIFEST_ACCEPT }))).toString()
+    (await readAll(await ghcrGet(`/manifests/${tag}`, { Accept: MANIFEST_ACCEPT }))).toString()
   );
 
   const layers = manifest.layers || [];
@@ -116,7 +122,7 @@ async function describeLatest() {
 
   const a = manifest.annotations || {};
   return {
-    ref: `${REGISTRY}/${REPO}:${TAG}`,
+    ref: `${REGISTRY}/${REPO}:${tag}`,
     board: a['io.clawlink.board'] || releases?.board || 'opizero3',
     osVersion: a['io.clawlink.os_version'] || releases?.os_version || '',
     version: a['org.opencontainers.image.version'] || releases?.version || '',
@@ -131,6 +137,29 @@ async function describeLatest() {
       size: imageLayer.size,
     },
   };
+}
+
+/** 하위호환 — 옛 단일보드(opizero3) 태그 없는 `latest` 조회. */
+async function describeLatest() {
+  return describeTag(TAG);
+}
+
+/** 보드 하나의 최신 이미지 — `<board>-latest`, opizero3 는 실패 시 구태그로 폴백. */
+async function describeBoard(board) {
+  try {
+    return await describeTag(`${board}-latest`);
+  } catch (e) {
+    if (board === LEGACY_TAG_BOARD) return describeTag(TAG);
+    throw e;
+  }
+}
+
+/** 발행된 모든 보드의 최신 이미지 목록 — 미발행 보드는 조용히 제외(imager#31 "준비중" UI). */
+async function describeAllBoards() {
+  const settled = await Promise.allSettled(KNOWN_BOARDS.map((b) => describeBoard(b)));
+  return settled
+    .filter((r) => r.status === 'fulfilled')
+    .map((r) => r.value);
 }
 
 // ── 다운로드 + 검증 ───────────────────────────────────────────────────────────
@@ -206,4 +235,4 @@ async function prepareImage({ cacheDir, info, onProgress = () => {} }) {
   return { path: dest, fileName: file, cached: false, sha256 };
 }
 
-module.exports = { describeLatest, prepareImage, REPO, TAG };
+module.exports = { describeLatest, describeBoard, describeAllBoards, prepareImage, REPO, TAG };

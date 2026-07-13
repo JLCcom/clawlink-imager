@@ -5,7 +5,7 @@ contextBridge.exposeInMainWorld('clImager', {
   checkSerial:    (serial)   => ipcRenderer.invoke('serial:check', serial),
   getOsManifest:  ()         => ipcRenderer.invoke('os:manifest'),
   listDrives:     ()         => ipcRenderer.invoke('drives:list'),
-  prepareImage:   ()         => ipcRenderer.invoke('image:prepare'),
+  prepareImage:   (board)    => ipcRenderer.invoke('image:prepare', board),
   pickLocalImage: ()         => ipcRenderer.invoke('image:pickLocal'),
   burnSD:         (opts)     => ipcRenderer.invoke('sd:burn', opts),
   onPrepareProgress:  (fn)   => ipcRenderer.on('prepare:progress', (_e, p) => fn(p)),
