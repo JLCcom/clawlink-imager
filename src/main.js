@@ -308,9 +308,16 @@ ipcMain.handle('sd:burn', async (e, opts) => {
   if (process.platform === 'win32') {
     // Windows 는 앱 자체가 관리자로 뜬다(package.json requestedExecutionLevel) — 승격 불필요.
     // 7z·dd 가 없으므로 xz 해제를 순수 JS(WASM)로 하고 \\.\PhysicalDriveN 에 직접 쓴다.
-    // (실기기 검증 중 EBADF 발견 — 볼륨 드라이브 문자를 떼도 재현됨. fs.createWriteStream
-    //  의 내부 위치 추적이 raw 디바이스 fd 에서 어긋나는 것으로 보여, 스트림 대신 파일
-    //  핸들을 직접 열어 위치를 명시하며 쓰는 저수준 방식으로 바꾼다.)
+    // 'w'(CREATE+TRUNC) 대신 'r+' 로 여는 것은 확인된 수정 — Windows 디바이스 경로는
+    // OPEN_EXISTING만 허용해서 'w' 로 열면 EINVAL 이 났다(#8).
+    //
+    // (실기기 미해결 — #8 2026-07-13 세션 기록) 이 아래 releaseDiskVolumes + 저수준
+    // FileHandle.write 조합은 굽기 도중(20~80% 구간)에 나는 EBADF 를 잡으려는 시도지만,
+    // 볼륨 드라이브 문자 제거만 했을 때도, 이 저수준 쓰기 방식으로 바꾼 뒤에도 실기기에서
+    // 동일하게 재현됐다. 즉 이 코드 자체가 EBADF 를 고친다는 근거는 없다. 세 가지 다른
+    // 코드 레벨 접근이 전부 같은 에러를 내는 걸 보면 원인이 Node.js 쓰기 방식이 아니라
+    // Windows USB 선택적 절전(Selective Suspend) 같은 전원관리 쪽일 가능성이 높다 —
+    // 절전을 끄고 재시험 필요(아직 안 함). 이 블록은 그 재시험 전까지 "미검증"으로 취급할 것.
     const diskNum = getDiskNumberFromDevice(device);
     await releaseDiskVolumes(diskNum);
     try {
@@ -343,7 +350,10 @@ ipcMain.handle('sd:burn', async (e, opts) => {
     } finally {
       // Windows 가 새 파티션 테이블을 다시 읽게 — 안 하면 findMountedVolume 이
       // 새로 생긴 설정 파티션에 드라이브 문자가 잡히는 걸 못 본다.
-      await rescanDisks();
+      // rescanDisks 실패를 던지면 위 쓰기 루프에서 이미 난 진짜 에러(EBADF 등)를
+      // finally 가 덮어써서 안 보이게 된다 — 원인 진단 중인 문제라 특히 치명적이라
+      // 로그만 남기고 삼킨다.
+      try { await rescanDisks(); } catch (err) { log.error('rescanDisks 실패(무시)', err); }
     }
 
     progress('injecting', 100);
