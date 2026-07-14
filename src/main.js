@@ -7,7 +7,6 @@ const { execFile } = require('child_process');
 const https = require('https');
 const http = require('http');
 const { Readable } = require('stream');
-const { pipeline } = require('stream/promises');
 const log = require('electron-log');
 const drivelist = require('drivelist');
 const ghcr = require('./ghcr');
@@ -250,6 +249,45 @@ function uncompressedSize(imagePath) {
   });
 }
 
+// Windows 물리 디스크 경로(\\.\PhysicalDriveN)에서 디스크 번호만 뽑아낸다.
+function getDiskNumberFromDevice(device) {
+  const m = /PhysicalDrive(\d+)/i.exec(device);
+  if (!m) throw new Error(`디스크 번호를 device 경로에서 못 찾음: ${device}`);
+  return m[1];
+}
+
+function runPowerShell(script) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', script],
+      (err, stdout, stderr) => {
+        if (err) return reject(new Error(`PowerShell 실패: ${stderr || stdout || err.message}`));
+        resolve(stdout);
+      }
+    );
+  });
+}
+
+// 쓰기 전 이 디스크의 볼륨(드라이브 문자)을 전부 뗀다 — diskpart 의 `offline disk` 는
+// 이동식 미디어(USB SD 리더)에서 "이 작업을 지원하지 않습니다" 로 거부되므로(실기기 확인),
+// 대신 파티션 단위로 드라이브 문자만 제거해 탐색기/파일시스템의 점유를 푼다. 안 풀면
+// 새 파티션 테이블을 쓰는 도중 Windows 가 디스크 상태 변화를 감지해 핸들을 무효화한다(EBADF).
+async function releaseDiskVolumes(diskNum) {
+  await runPowerShell(
+    `Get-Partition -DiskNumber ${diskNum} | ForEach-Object { ` +
+    `if ($_.DriveLetter) { ` +
+    `Remove-PartitionAccessPath -DiskNumber ${diskNum} -PartitionNumber $_.PartitionNumber -AccessPath ("$($_.DriveLetter):\\") -ErrorAction SilentlyContinue ` +
+    `} }`
+  );
+}
+
+// 쓰기 후 Windows 가 새 파티션 테이블을 다시 읽게 한다 — 안 하면 findMountedVolume 이
+// 새로 생긴 설정 파티션에 드라이브 문자가 잡히는 걸 못 본다.
+async function rescanDisks() {
+  await runPowerShell('Update-HostStorageCache');
+}
+
 // SD 쓰기 + 설정 주입 (#9). 권한 상승은 한 번만 — 두 단계를 따로 승격하면
 // 사용자가 암호를 두 번 넣어야 한다.
 ipcMain.handle('sd:burn', async (e, opts) => {
@@ -270,19 +308,53 @@ ipcMain.handle('sd:burn', async (e, opts) => {
   if (process.platform === 'win32') {
     // Windows 는 앱 자체가 관리자로 뜬다(package.json requestedExecutionLevel) — 승격 불필요.
     // 7z·dd 가 없으므로 xz 해제를 순수 JS(WASM)로 하고 \\.\PhysicalDriveN 에 직접 쓴다.
-    // (실기기 미검증 — #8)
-    const { XzReadableStream } = require('xz-decompress');
-    const total = fs.statSync(imagePath).size; // 압축 파일 크기 기준 — 진행률은 근사치
-    let read = 0;
-    const compressed = fs.createReadStream(imagePath);
-    compressed.on('data', (chunk) => {
-      read += chunk.length;
-      progress('writing', Math.round((read / total) * 100));
-    });
-    await pipeline(
-      Readable.fromWeb(new XzReadableStream(Readable.toWeb(compressed))),
-      fs.createWriteStream(device, { flags: 'w' })
-    );
+    // 'w'(CREATE+TRUNC) 대신 'r+' 로 여는 것은 확인된 수정 — Windows 디바이스 경로는
+    // OPEN_EXISTING만 허용해서 'w' 로 열면 EINVAL 이 났다(#8).
+    //
+    // (실기기 미해결 — #8 2026-07-13 세션 기록) 이 아래 releaseDiskVolumes + 저수준
+    // FileHandle.write 조합은 굽기 도중(20~80% 구간)에 나는 EBADF 를 잡으려는 시도지만,
+    // 볼륨 드라이브 문자 제거만 했을 때도, 이 저수준 쓰기 방식으로 바꾼 뒤에도 실기기에서
+    // 동일하게 재현됐다. 즉 이 코드 자체가 EBADF 를 고친다는 근거는 없다. 세 가지 다른
+    // 코드 레벨 접근이 전부 같은 에러를 내는 걸 보면 원인이 Node.js 쓰기 방식이 아니라
+    // Windows USB 선택적 절전(Selective Suspend) 같은 전원관리 쪽일 가능성이 높다 —
+    // 절전을 끄고 재시험 필요(아직 안 함). 이 블록은 그 재시험 전까지 "미검증"으로 취급할 것.
+    const diskNum = getDiskNumberFromDevice(device);
+    await releaseDiskVolumes(diskNum);
+    try {
+      const { XzReadableStream } = require('xz-decompress');
+      const total = fs.statSync(imagePath).size; // 압축 파일 크기 기준 — 진행률은 근사치
+      let read = 0;
+      const compressed = fs.createReadStream(imagePath);
+      compressed.on('data', (chunk) => {
+        read += chunk.length;
+        progress('writing', Math.round((read / total) * 100));
+      });
+      const decompressed = Readable.fromWeb(new XzReadableStream(Readable.toWeb(compressed)));
+
+      const fd = await fs.promises.open(device, 'r+');
+      try {
+        let position = 0;
+        for await (const chunk of decompressed) {
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          let off = 0;
+          while (off < buf.length) {
+            const { bytesWritten } = await fd.write(buf, off, buf.length - off, position + off);
+            if (bytesWritten <= 0) throw new Error('디스크 쓰기가 진행되지 않습니다(bytesWritten=0).');
+            off += bytesWritten;
+          }
+          position += buf.length;
+        }
+      } finally {
+        await fd.close();
+      }
+    } finally {
+      // Windows 가 새 파티션 테이블을 다시 읽게 — 안 하면 findMountedVolume 이
+      // 새로 생긴 설정 파티션에 드라이브 문자가 잡히는 걸 못 본다.
+      // rescanDisks 실패를 던지면 위 쓰기 루프에서 이미 난 진짜 에러(EBADF 등)를
+      // finally 가 덮어써서 안 보이게 된다 — 원인 진단 중인 문제라 특히 치명적이라
+      // 로그만 남기고 삼킨다.
+      try { await rescanDisks(); } catch (err) { log.error('rescanDisks 실패(무시)', err); }
+    }
 
     progress('injecting', 100);
     const mountPath = await partition.findMountedVolume(drivelist, device);
